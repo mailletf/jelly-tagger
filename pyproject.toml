@@ -1,0 +1,16 @@
+[project]
+name = "jelly-tagger"
+version = "0.1.0"
+description = "CLI tool to organize MP3s into a Jellyfin-friendly Artist/Album/Track folder structure"
+authors = [
+    {name = "François Maillet",email = "fmaillet@gmail.com"}
+]
+requires-python = ">=3.11,<4"
+dependencies = [
+    "mutagen (>=1.48.1,<2.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
