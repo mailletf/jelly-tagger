@@ -1,7 +1,7 @@
 [project]
 name = "jelly-tagger"
 version = "0.1.0"
-description = "CLI tool to organize MP3s into a Jellyfin-friendly Artist/Album/Track folder structure"
+description = "CLI tool to organize MP3s and movies into Jellyfin-friendly folder structures"
 authors = [
     {name = "François Maillet",email = "fmaillet@gmail.com"}
 ]

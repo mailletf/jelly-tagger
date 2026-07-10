@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
 """
-Jellyfin MP3 Organizer (CLI)
+Jellyfin Library Organizer (CLI)
 -----------------------------
-Scans a folder of MP3 files, reads their ID3 tags, and reorganizes them into
-the folder structure Jellyfin expects:
+Scans a folder of media files and reorganizes them into the folder
+structure Jellyfin expects.
+
+Music mode (default) reads MP3 ID3 tags:
 
     Music Library/
         Artist/
             Album/
                 01 - Track Title.mp3
 
+Movies mode looks up each video file on TMDB and lays it out as:
+
+    Movies/
+        Title (Year) [tmdbid-12345]/
+            Title (Year).mkv
+            Title (Year).jpg
+            backdrop.jpg
+            logo.png
+
 Usage:
-    python3 jelly_tagger.py SOURCE_DIR DEST_DIR [--move] [--yes] [--dry-run]
+    python3 jelly_tagger.py SOURCE_DIR DEST_DIR [--mode music|movies] [--move] [--yes] [--dry-run]
 
 Examples:
     # Preview only, no confirmation prompt, doesn't touch any files
@@ -23,7 +34,11 @@ Examples:
     # Move files instead of copy, skip the confirmation prompt
     python3 jelly_tagger.py ~/Downloads/messy-mp3s ~/Music/Jellyfin --move --yes
 
+    # Organize movies (requires a TMDB API key)
+    TMDB_API_KEY=xxxx python3 jelly_tagger.py ~/Downloads/movies ~/Media/Movies --mode movies
+
 Requires: mutagen (pip install mutagen)
+Movies mode also requires a free TMDB API key: https://www.themoviedb.org/settings/api
 """
 
 import argparse
@@ -179,10 +194,18 @@ def execute_plan(plan, move: bool):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Organize MP3s into a Jellyfin-friendly Artist/Album/Track folder structure."
+        description="Organize MP3s or movies into a Jellyfin-friendly folder structure."
     )
-    parser.add_argument("source", help="Folder containing MP3 files to organize (scanned recursively)")
-    parser.add_argument("dest", help="Destination Jellyfin music library folder")
+    parser.add_argument("source", help="Folder containing files to organize (scanned recursively)")
+    parser.add_argument("dest", help="Destination Jellyfin library folder")
+    parser.add_argument(
+        "--mode", choices=["music", "movies"], default="music",
+        help="Library type to organize (default: music)",
+    )
+    parser.add_argument(
+        "--tmdb-api-key", default=os.environ.get("TMDB_API_KEY"),
+        help="TMDB API key (movies mode only). Falls back to the TMDB_API_KEY env var.",
+    )
     parser.add_argument("--move", action="store_true", help="Move files instead of copying (deletes originals)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--dry-run", action="store_true", help="Show the plan only, don't touch any files")
@@ -191,6 +214,13 @@ def main():
     if not os.path.isdir(args.source):
         sys.exit(f"Error: source folder does not exist: {args.source}")
 
+    if args.mode == "movies":
+        run_movies_mode(args)
+    else:
+        run_music_mode(args)
+
+
+def run_music_mode(args):
     mp3_files = find_mp3s(args.source)
     if not mp3_files:
         print("No MP3 files found in that folder.")
@@ -211,6 +241,43 @@ def main():
             return
 
     execute_plan(plan, move=args.move)
+
+
+def run_movies_mode(args):
+    if not args.tmdb_api_key:
+        sys.exit(
+            "Error: movies mode requires a TMDB API key.\n"
+            "Pass --tmdb-api-key or set the TMDB_API_KEY environment variable.\n"
+            "Get a free key at https://www.themoviedb.org/settings/api"
+        )
+
+    import movies
+
+    video_files = movies.find_video_files(args.source)
+    if not video_files:
+        print("No movie files found in that folder.")
+        return
+
+    tmdb_client = movies.TMDBClient(args.tmdb_api_key)
+    plan = movies.build_movie_plan(video_files, args.dest, tmdb_client)
+    print()
+    movies.print_movie_plan(plan)
+
+    if not plan:
+        return
+
+    if args.dry_run:
+        print("\n(dry run — no files were touched)")
+        return
+
+    if not args.yes:
+        action = "move" if args.move else "copy"
+        answer = input(f"\n{action.capitalize()} these {len(plan)} movie(s) into {args.dest}? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    movies.execute_movie_plan(plan, move=args.move)
 
 
 if __name__ == "__main__":

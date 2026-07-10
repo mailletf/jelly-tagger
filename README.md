@@ -1,8 +1,15 @@
 # jelly-tagger
 
-A small command-line tool that scans a folder of MP3 files, reads their ID3
-tags, and reorganizes them into the folder structure Jellyfin expects for
-its music library:
+A small command-line tool that organizes messy media folders into the
+layout Jellyfin expects. It has two modes:
+
+- **`--mode music`** (default) — scans MP3 files, reads their ID3 tags, and
+  reorganizes them into an Artist/Album/Track structure.
+- **`--mode movies`** — scans video files, looks each one up on
+  [TMDB](https://www.themoviedb.org/), and lays it out with a `tmdbid` tag
+  and artwork the way Jellyfin likes.
+
+## Music mode
 
 ```
 Music Library/
@@ -19,10 +26,51 @@ be correct first (see [Getting your tags right](#getting-your-tags-right)
 below). Files with missing tags fall back to "Unknown Artist" /
 "Unknown Album" / the original filename, so nothing gets skipped.
 
+## Movies mode
+
+```
+Movies/
+    Juno (2007) [tmdbid-7326]/
+        Juno (2007).mkv
+        Juno (2007).jpg      (poster)
+        backdrop.jpg
+        logo.png
+        Juno (2007).en.srt   (if a matching subtitle sits next to the source file)
+```
+
+For each video file found, jelly-tagger guesses a title/year from the
+filename (stripping resolution/codec/release-group tags like `1080p`,
+`BluRay`, `x264`, etc.), searches TMDB for a match, and:
+
+- **auto-picks** the match if there's exactly one exact title+year hit
+- otherwise **prompts you interactively** with a numbered list of
+  candidates — pick one, type a new search term, or `s` to skip that file
+
+This confirmation step always runs (even with `--yes`, which only skips the
+final "proceed with copy?" prompt), since a wrong TMDB match is hard to
+notice after the fact.
+
+Once confirmed, it downloads the poster, backdrop, and logo from TMDB and
+copies/moves the video (and any matching `.srt`/`.sub` subtitles sitting
+next to it) into `Title (Year) [tmdbid-ID]/`.
+
+### TMDB API key
+
+Movies mode needs a free TMDB API key: create one at
+https://www.themoviedb.org/settings/api, then either:
+
+```bash
+export TMDB_API_KEY=your_key_here
+```
+
+or pass it per-run with `--tmdb-api-key your_key_here`.
+
 ## Requirements
 
 - Python 3.11+
-- [mutagen](https://mutagen.readthedocs.io/) for reading ID3 tags
+- [mutagen](https://mutagen.readthedocs.io/) for reading ID3 tags (music mode)
+- A TMDB API key (movies mode only) — no extra Python packages needed, it
+  uses the standard library to talk to the TMDB API.
 
 Install with:
 
@@ -39,11 +87,11 @@ poetry install
 ## Usage
 
 ```bash
-python3 jelly_tagger.py SOURCE_DIR DEST_DIR [--move] [--yes] [--dry-run]
+python3 jelly_tagger.py SOURCE_DIR DEST_DIR [--mode music|movies] [--move] [--yes] [--dry-run]
 ```
 
-- `SOURCE_DIR` — folder containing your messy MP3s (scanned recursively)
-- `DEST_DIR` — your Jellyfin music library folder
+- `SOURCE_DIR` — folder containing your messy files (scanned recursively)
+- `DEST_DIR` — your Jellyfin library folder (music library or Movies folder)
 
 ### Examples
 
@@ -65,13 +113,22 @@ Move files instead of copying, and skip the confirmation prompt:
 python3 jelly_tagger.py ~/Downloads/messy-mp3s ~/Music/Jellyfin --move --yes
 ```
 
+Organize movies (still prompts to confirm/pick each TMDB match):
+
+```bash
+python3 jelly_tagger.py ~/Downloads/movies ~/Media/Movies --mode movies --dry-run
+python3 jelly_tagger.py ~/Downloads/movies ~/Media/Movies --mode movies --move
+```
+
 ## Options
 
-| Flag           | Description                                              |
-|-----------------|-----------------------------------------------------------|
-| `--move`       | Move files instead of copying them (deletes originals)   |
-| `--yes`, `-y`  | Skip the confirmation prompt                              |
-| `--dry-run`    | Print the plan only; don't touch any files                |
+| Flag                  | Description                                                        |
+|------------------------|---------------------------------------------------------------------|
+| `--mode music\|movies` | Library type to organize (default: `music`)                         |
+| `--tmdb-api-key KEY`  | TMDB API key for movies mode (or set `TMDB_API_KEY` env var)        |
+| `--move`              | Move files instead of copying them (deletes originals)              |
+| `--yes`, `-y`         | Skip the final copy/move confirmation prompt                        |
+| `--dry-run`           | Print the plan only; don't touch any files                          |
 
 ## How it decides where a file goes
 
