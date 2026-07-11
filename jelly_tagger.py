@@ -21,8 +21,20 @@ Movies mode looks up each video file on TMDB and lays it out as:
             backdrop.jpg
             logo.png
 
+TV mode looks up each show on TMDB, groups episodes by show, and lays them
+out as:
+
+    Shows/
+        Show Name (2010) [tmdbid-1396]/
+            Season 01/
+                Show Name (2010) S01E01.mkv
+                Show Name (2010) S01E02.mkv
+            poster.jpg
+            backdrop.jpg
+            logo.png
+
 Usage:
-    python3 jelly_tagger.py SOURCE_DIR DEST_DIR [--mode music|movies] [--move] [--yes] [--dry-run]
+    python3 jelly_tagger.py SOURCE_DIR DEST_DIR [--mode music|movies|tv] [--move] [--yes] [--dry-run]
 
 Examples:
     # Preview only, no confirmation prompt, doesn't touch any files
@@ -199,12 +211,12 @@ def main():
     parser.add_argument("source", help="Folder containing files to organize (scanned recursively)")
     parser.add_argument("dest", help="Destination Jellyfin library folder")
     parser.add_argument(
-        "--mode", choices=["music", "movies"], default="music",
+        "--mode", choices=["music", "movies", "tv"], default="music",
         help="Library type to organize (default: music)",
     )
     parser.add_argument(
         "--tmdb-api-key", default=os.environ.get("TMDB_API_KEY"),
-        help="TMDB API key (movies mode only). Falls back to the TMDB_API_KEY env var.",
+        help="TMDB API key (movies/tv mode only). Falls back to the TMDB_API_KEY env var.",
     )
     parser.add_argument("--move", action="store_true", help="Move files instead of copying (deletes originals)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
@@ -216,6 +228,8 @@ def main():
 
     if args.mode == "movies":
         run_movies_mode(args)
+    elif args.mode == "tv":
+        run_tv_mode(args)
     else:
         run_music_mode(args)
 
@@ -278,6 +292,44 @@ def run_movies_mode(args):
             return
 
     movies.execute_movie_plan(plan, move=args.move)
+
+
+def run_tv_mode(args):
+    if not args.tmdb_api_key:
+        sys.exit(
+            "Error: tv mode requires a TMDB API key.\n"
+            "Pass --tmdb-api-key or set the TMDB_API_KEY environment variable.\n"
+            "Get a free key at https://www.themoviedb.org/settings/api"
+        )
+
+    import movies
+    import tv
+
+    episode_files = tv.find_episode_files(args.source)
+    if not episode_files:
+        print("No episode files found in that folder.")
+        return
+
+    tmdb_client = movies.TMDBClient(args.tmdb_api_key)
+    plan = tv.build_tv_plan(episode_files, args.dest, tmdb_client)
+    print()
+    tv.print_tv_plan(plan)
+
+    if not plan:
+        return
+
+    if args.dry_run:
+        print("\n(dry run — no files were touched)")
+        return
+
+    if not args.yes:
+        action = "move" if args.move else "copy"
+        answer = input(f"\n{action.capitalize()} these {len(plan)} episode(s) into {args.dest}? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    tv.execute_tv_plan(plan, move=args.move)
 
 
 if __name__ == "__main__":

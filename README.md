@@ -8,6 +8,9 @@ layout Jellyfin expects. It has two modes:
 - **`--mode movies`** — scans video files, looks each one up on
   [TMDB](https://www.themoviedb.org/), and lays it out with a `tmdbid` tag
   and artwork the way Jellyfin likes.
+- **`--mode tv`** — scans episode files, groups them by show, looks each
+  show up on TMDB once, and lays episodes out in `Season XX` folders with
+  show-level artwork.
 
 ## Music mode
 
@@ -54,9 +57,36 @@ Once confirmed, it downloads the poster, backdrop, and logo from TMDB and
 copies/moves the video (and any matching `.srt`/`.sub` subtitles sitting
 next to it) into `Title (Year) [tmdbid-ID]/`.
 
+## TV mode
+
+```
+Shows/
+    Breaking Bad (2008) [tmdbid-1396]/
+        Season 01/
+            Breaking Bad (2008) S01E01.mkv
+            Breaking Bad (2008) S01E02.mkv
+        Season 02/
+            ...
+        poster.jpg
+        backdrop.jpg
+        logo.png
+```
+
+Episodes are recognized by `S01E02`, `1x02`, or a bare episode number inside
+a `Season X` folder (multi-episode files like `S01E01E02` use the first
+episode number). The show name is guessed from the containing folder when
+there is one, otherwise from the filename.
+
+Episodes are **grouped by show** and the TMDB match is confirmed once per
+show — same interactive picker as movies mode, and `s` skips that show's
+episodes entirely. Files whose season/episode can't be parsed prompt you to
+type an `SxxExx` manually or skip them. Artwork (`poster.jpg`,
+`backdrop.jpg`, `logo.png`) is downloaded once into the show's root folder,
+and sibling `.srt`/`.sub` subtitles are renamed alongside each episode.
+
 ### TMDB API key
 
-Movies mode needs a free TMDB API key: create one at
+Movies and TV modes need a free TMDB API key: create one at
 https://www.themoviedb.org/settings/api, then either:
 
 ```bash
@@ -120,12 +150,19 @@ python3 jelly_tagger.py ~/Downloads/movies ~/Media/Movies --mode movies --dry-ru
 python3 jelly_tagger.py ~/Downloads/movies ~/Media/Movies --mode movies --move
 ```
 
+Organize TV shows (confirms each show once, then places all its episodes):
+
+```bash
+python3 jelly_tagger.py ~/Downloads/tv ~/Media/Shows --mode tv --dry-run
+python3 jelly_tagger.py ~/Downloads/tv ~/Media/Shows --mode tv --move
+```
+
 ## Options
 
 | Flag                  | Description                                                        |
 |------------------------|---------------------------------------------------------------------|
-| `--mode music\|movies` | Library type to organize (default: `music`)                         |
-| `--tmdb-api-key KEY`  | TMDB API key for movies mode (or set `TMDB_API_KEY` env var)        |
+| `--mode music\|movies\|tv` | Library type to organize (default: `music`)                     |
+| `--tmdb-api-key KEY`  | TMDB API key for movies/tv modes (or set `TMDB_API_KEY` env var)    |
 | `--move`              | Move files instead of copying them (deletes originals)              |
 | `--yes`, `-y`         | Skip the final copy/move confirmation prompt                        |
 | `--dry-run`           | Print the plan only; don't touch any files                          |

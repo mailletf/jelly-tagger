@@ -67,6 +67,17 @@ def guess_title_year(filename: str):
     return name or os.path.splitext(filename)[0], year
 
 
+def _best_image(images, prefer_lang=None):
+    if not images:
+        return None
+    if prefer_lang is not None:
+        lang_matches = [img for img in images if img.get("iso_639_1") == prefer_lang]
+        if lang_matches:
+            images = lang_matches
+    images = sorted(images, key=lambda i: i.get("vote_count", 0), reverse=True)
+    return TMDB_IMAGE_BASE + images[0]["file_path"]
+
+
 class TMDBClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -102,19 +113,34 @@ class TMDBClient:
     def get_images(self, tmdb_id: int):
         data = self._get(f"/movie/{tmdb_id}/images", {})
 
-        def best(images, prefer_lang=None):
-            if not images:
-                return None
-            if prefer_lang is not None:
-                lang_matches = [img for img in images if img.get("iso_639_1") == prefer_lang]
-                if lang_matches:
-                    images = lang_matches
-            images = sorted(images, key=lambda i: i.get("vote_count", 0), reverse=True)
-            return TMDB_IMAGE_BASE + images[0]["file_path"]
+        poster = _best_image(data.get("posters", []))
+        backdrop = _best_image(data.get("backdrops", []))
+        logo = _best_image(data.get("logos", []), prefer_lang="en") or _best_image(data.get("logos", []))
 
-        poster = best(data.get("posters", []))
-        backdrop = best(data.get("backdrops", []))
-        logo = best(data.get("logos", []), prefer_lang="en") or best(data.get("logos", []))
+        return {"poster": poster, "backdrop": backdrop, "logo": logo}
+
+    def search_tv(self, name: str, year=None):
+        params = {"query": name, "include_adult": "false"}
+        if year:
+            params["first_air_date_year"] = str(year)
+        data = self._get("/search/tv", params)
+        candidates = []
+        for r in data.get("results", []):
+            first_air_date = r.get("first_air_date") or ""
+            candidates.append({
+                "id": r["id"],
+                "title": r.get("name") or r.get("original_name") or "",
+                "year": int(first_air_date[:4]) if first_air_date[:4].isdigit() else None,
+                "overview": r.get("overview") or "",
+            })
+        return candidates
+
+    def get_tv_images(self, tv_id: int):
+        data = self._get(f"/tv/{tv_id}/images", {})
+
+        poster = _best_image(data.get("posters", []))
+        backdrop = _best_image(data.get("backdrops", []))
+        logo = _best_image(data.get("logos", []), prefer_lang="en") or _best_image(data.get("logos", []))
 
         return {"poster": poster, "backdrop": backdrop, "logo": logo}
 
@@ -126,27 +152,28 @@ def _print_candidates(candidates):
         print(f"  [{i}] {c['title']} ({year_str}) [tmdbid-{c['id']}]  {overview}")
 
 
-def resolve_movie(video_path: str, tmdb_client: TMDBClient):
-    """Interactively resolve a video file to a confirmed TMDB movie match.
+def resolve_interactive(header: str, search_fn, guessed_name, guessed_year, skip_prompt: str):
+    """Shared interactive TMDB resolution loop.
 
-    Returns a dict with id/title/year, or None if the user chose to skip it.
+    Auto-matches when exactly one candidate exactly matches the current search
+    name (and year, when one is set). Otherwise prints a numbered candidate list
+    and lets the user pick a number, enter a new free-text search term, or skip.
+    Returns the chosen candidate dict, or None if the user chose to skip.
     """
-    filename = os.path.basename(video_path)
-    guessed_title, guessed_year = guess_title_year(filename)
-    search_title, search_year = guessed_title, guessed_year
+    search_name, search_year = guessed_name, guessed_year
 
     while True:
-        print(f"\n{filename}")
-        print(f"  guessed: \"{search_title}\"" + (f" ({search_year})" if search_year else ""))
+        print(f"\n{header}")
+        print(f"  guessed: \"{search_name}\"" + (f" ({search_year})" if search_year else ""))
         try:
-            candidates = tmdb_client.search_movie(search_title, search_year)
+            candidates = search_fn(search_name, search_year)
         except RuntimeError as e:
             print(f"  ERROR: {e}")
             candidates = []
 
         exact = [
             c for c in candidates
-            if c["title"].strip().lower() == search_title.strip().lower()
+            if c["title"].strip().lower() == search_name.strip().lower()
             and (search_year is None or c["year"] == search_year)
         ]
         if len(exact) == 1:
@@ -160,17 +187,31 @@ def resolve_movie(video_path: str, tmdb_client: TMDBClient):
             print("  Candidates:")
             _print_candidates(candidates)
 
-        answer = input(
-            "  Pick a number, enter a new search term, or 's' to skip this file: "
-        ).strip()
+        answer = input(skip_prompt).strip()
 
         if answer.lower() in ("s", "skip"):
             return None
         if answer.isdigit() and 1 <= int(answer) <= len(candidates):
             return candidates[int(answer) - 1]
         if answer:
-            search_title, search_year = answer, None
+            search_name, search_year = answer, None
         # empty input: just re-search with the same term
+
+
+def resolve_movie(video_path: str, tmdb_client: TMDBClient):
+    """Interactively resolve a video file to a confirmed TMDB movie match.
+
+    Returns a dict with id/title/year, or None if the user chose to skip it.
+    """
+    filename = os.path.basename(video_path)
+    guessed_title, guessed_year = guess_title_year(filename)
+    return resolve_interactive(
+        filename,
+        tmdb_client.search_movie,
+        guessed_title,
+        guessed_year,
+        "  Pick a number, enter a new search term, or 's' to skip this file: ",
+    )
 
 
 def find_video_files(source_dir: str):
