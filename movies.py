@@ -400,6 +400,24 @@ def _download(url: str, dest: str):
         out.write(resp.read())
 
 
+def _resolve_collision(src: str, dest: str):
+    """Pick a final destination when dest may already exist.
+
+    Returns (final_dest, skip). An existing file of the same size is treated
+    as an already-organized copy of src and skipped; a different file gets a
+    " (1)"-style suffix so nothing is ever overwritten.
+    """
+    base, ext = os.path.splitext(dest)
+    candidate = dest
+    counter = 1
+    while os.path.exists(candidate) and os.path.abspath(candidate) != os.path.abspath(src):
+        if os.path.getsize(candidate) == os.path.getsize(src):
+            return candidate, True
+        candidate = f"{base} ({counter}){ext}"
+        counter += 1
+    return candidate, False
+
+
 def execute_movie_plan(plan, move: bool):
     import shutil
 
@@ -412,11 +430,15 @@ def execute_movie_plan(plan, move: bool):
         try:
             os.makedirs(item["movie_dir"], exist_ok=True)
 
+            final_dest, skip = _resolve_collision(src, dest)
+            if skip:
+                print(f"[{i}/{total}] Already at destination, skipping: {label} ({final_dest})")
+                continue
             if move:
-                shutil.move(src, dest)
+                shutil.move(src, final_dest)
             else:
-                shutil.copy2(src, dest)
-            print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {dest}")
+                shutil.copy2(src, final_dest)
+            print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
             for sub_src, sub_dest in item["subtitles"]:
                 if move:

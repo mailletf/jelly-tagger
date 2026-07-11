@@ -195,6 +195,80 @@ def test_resolve_interactive_fallback_exhausted_still_prompts():
 
 
 # ---------------------------------------------------------------------------
+# _resolve_collision
+# ---------------------------------------------------------------------------
+
+def test_resolve_collision_no_conflict(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"aaa")
+    dest = str(tmp_path / "out" / "Movie (2000).mkv")
+    assert movies._resolve_collision(str(src), dest) == (dest, False)
+
+
+def test_resolve_collision_suffixes_different_file(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"aaa")
+    dest = tmp_path / "Movie (2000).mkv"
+    dest.write_bytes(b"different-size")
+    final, skip = movies._resolve_collision(str(src), str(dest))
+    assert not skip
+    assert final == str(tmp_path / "Movie (2000) (1).mkv")
+
+
+def test_resolve_collision_skips_same_size(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"aaa")
+    dest = tmp_path / "Movie (2000).mkv"
+    dest.write_bytes(b"bbb")
+    final, skip = movies._resolve_collision(str(src), str(dest))
+    assert skip
+    assert final == str(dest)
+
+
+def test_execute_movie_plan_duplicate_dest_not_overwritten(tmp_path):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    first = src_dir / "Juno.2007.720p.mkv"
+    second = src_dir / "Juno.2007.1080p.mkv"
+    first.write_bytes(b"720p-content")
+    second.write_bytes(b"1080p-content-longer")
+
+    movie_dir = tmp_path / "dest" / "Juno (2007) [tmdbid-7326]"
+    dest = str(movie_dir / "Juno (2007).mkv")
+    plan = [
+        {"src": str(f), "dest": dest, "movie_dir": str(movie_dir),
+         "title": "Juno", "year": 2007, "tmdb_id": 7326,
+         "subtitles": [], "artwork_files": {}}
+        for f in (first, second)
+    ]
+    movies.execute_movie_plan(plan, move=True)
+
+    assert (movie_dir / "Juno (2007).mkv").read_bytes() == b"720p-content"
+    assert (movie_dir / "Juno (2007) (1).mkv").read_bytes() == b"1080p-content-longer"
+    assert not first.exists() and not second.exists()
+
+
+def test_execute_movie_plan_rerun_skips_existing_copy(tmp_path, capsys):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    src = src_dir / "Juno.2007.mkv"
+    src.write_bytes(b"content")
+
+    movie_dir = tmp_path / "dest" / "Juno (2007) [tmdbid-7326]"
+    plan = [{"src": str(src), "dest": str(movie_dir / "Juno (2007).mkv"),
+             "movie_dir": str(movie_dir), "title": "Juno", "year": 2007,
+             "tmdb_id": 7326, "subtitles": [], "artwork_files": {}}]
+
+    movies.execute_movie_plan(plan, move=False)
+    movies.execute_movie_plan(plan, move=False)
+
+    assert "Already at destination, skipping" in capsys.readouterr().out
+    files = sorted(p.name for p in movie_dir.iterdir())
+    assert files == ["Juno (2007).mkv"]
+    assert src.exists()
+
+
+# ---------------------------------------------------------------------------
 # ResolutionCache
 # ---------------------------------------------------------------------------
 

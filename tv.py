@@ -278,11 +278,15 @@ def execute_tv_plan(plan, move: bool):
         try:
             os.makedirs(item["season_dir"], exist_ok=True)
 
+            final_dest, skip = movies._resolve_collision(src, dest)
+            if skip:
+                print(f"[{i}/{total}] Already at destination, skipping: {label} ({final_dest})")
+                continue
             if move:
-                shutil.move(src, dest)
+                shutil.move(src, final_dest)
             else:
-                shutil.copy2(src, dest)
-            print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {dest}")
+                shutil.copy2(src, final_dest)
+            print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
             for sub_src, sub_dest in item["subtitles"]:
                 if move:

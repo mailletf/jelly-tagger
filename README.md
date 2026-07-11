@@ -67,6 +67,12 @@ Once confirmed, it downloads the poster, backdrop, and logo from TMDB and
 copies/moves the video (and any matching `.srt`/`.sub` subtitles sitting
 next to it) into `Title (Year) [tmdbid-ID]/`.
 
+If two source files resolve to the same destination (e.g. two rips of the
+same movie), nothing is overwritten: an existing file of the same size is
+assumed to be the same copy and skipped, and a different file gets a
+`(1)`-style suffix — Jellyfin shows those as multiple versions of the
+movie. The same applies in TV mode.
+
 ## TV mode
 
 ```
