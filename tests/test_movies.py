@@ -195,6 +195,61 @@ def test_resolve_interactive_fallback_exhausted_still_prompts():
 
 
 # ---------------------------------------------------------------------------
+# _transfer
+# ---------------------------------------------------------------------------
+
+def test_transfer_copy(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"content")
+    dest = tmp_path / "b.mkv"
+    movies._transfer(str(src), str(dest), move=False)
+    assert dest.read_bytes() == b"content"
+    assert src.exists()
+
+
+def test_transfer_move(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"content")
+    dest = tmp_path / "b.mkv"
+    movies._transfer(str(src), str(dest), move=True)
+    assert dest.read_bytes() == b"content"
+    assert not src.exists()
+
+
+def test_transfer_copystat_failure_is_not_fatal(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"content")
+    dest = tmp_path / "b.mkv"
+    with mock.patch("movies.shutil.copystat", side_effect=PermissionError(1, "Operation not permitted")):
+        movies._transfer(str(src), str(dest), move=False)
+    assert dest.read_bytes() == b"content"
+
+
+def test_transfer_move_delete_failure_says_copy_succeeded(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"content")
+    dest = tmp_path / "b.mkv"
+    # Force the cross-device path (rename fails), then fail the source delete.
+    with mock.patch("movies.os.rename", side_effect=OSError(18, "Cross-device link")), \
+         mock.patch("movies.os.unlink", side_effect=PermissionError(1, "Operation not permitted")):
+        with pytest.raises(RuntimeError) as exc:
+            movies._transfer(str(src), str(dest), move=True)
+    assert "copied to" in str(exc.value)
+    assert "could not delete source" in str(exc.value)
+    assert dest.read_bytes() == b"content"
+
+
+def test_transfer_copy_failure_names_both_paths(tmp_path):
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"content")
+    dest = tmp_path / "missing-dir" / "b.mkv"
+    with pytest.raises(RuntimeError) as exc:
+        movies._transfer(str(src), str(dest), move=False)
+    assert str(src) in str(exc.value)
+    assert str(dest) in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_collision
 # ---------------------------------------------------------------------------
 

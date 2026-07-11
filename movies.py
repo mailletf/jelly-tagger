@@ -18,6 +18,7 @@ via --tmdb-api-key or the TMDB_API_KEY environment variable.
 import json
 import os
 import re
+import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -400,6 +401,39 @@ def _download(url: str, dest: str):
         out.write(resp.read())
 
 
+def _transfer(src: str, dest: str, move: bool):
+    """Copy or move a file, with errors that say which step failed.
+
+    On external/network volumes (exFAT, SMB, ...) copy2's metadata step and
+    move's delete-source step both commonly fail with "Operation not
+    permitted". Failing to preserve timestamps is not worth aborting over,
+    and a failed source delete should say the copy itself succeeded.
+    """
+    if move:
+        try:
+            os.rename(src, dest)
+            return
+        except OSError:
+            pass  # different filesystem (or rename refused): copy, then delete
+
+    try:
+        shutil.copyfile(src, dest)
+    except OSError as e:
+        raise RuntimeError(f"copying {src} -> {dest}: {e}") from e
+    try:
+        shutil.copystat(src, dest)
+    except OSError:
+        pass  # this volume won't take timestamps/flags; keep the copy anyway
+
+    if move:
+        try:
+            os.unlink(src)
+        except OSError as e:
+            raise RuntimeError(
+                f"copied to {dest}, but could not delete source {src}: {e}"
+            ) from e
+
+
 def _resolve_collision(src: str, dest: str):
     """Pick a final destination when dest may already exist.
 
@@ -419,8 +453,6 @@ def _resolve_collision(src: str, dest: str):
 
 
 def execute_movie_plan(plan, move: bool):
-    import shutil
-
     errors = []
     total = len(plan)
     for i, item in enumerate(plan, start=1):
@@ -434,17 +466,11 @@ def execute_movie_plan(plan, move: bool):
             if skip:
                 print(f"[{i}/{total}] Already at destination, skipping: {label} ({final_dest})")
                 continue
-            if move:
-                shutil.move(src, final_dest)
-            else:
-                shutil.copy2(src, final_dest)
+            _transfer(src, final_dest, move)
             print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
             for sub_src, sub_dest in item["subtitles"]:
-                if move:
-                    shutil.move(sub_src, sub_dest)
-                else:
-                    shutil.copy2(sub_src, sub_dest)
+                _transfer(sub_src, sub_dest, move)
                 print(f"    + subtitle: {os.path.basename(sub_dest)}")
 
             for url, art_dest in item["artwork_files"].items():

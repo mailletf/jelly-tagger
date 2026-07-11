@@ -267,8 +267,6 @@ def print_tv_plan(plan):
 
 
 def execute_tv_plan(plan, move: bool):
-    import shutil
-
     errors = []
     total = len(plan)
     for i, item in enumerate(plan, start=1):
@@ -282,17 +280,11 @@ def execute_tv_plan(plan, move: bool):
             if skip:
                 print(f"[{i}/{total}] Already at destination, skipping: {label} ({final_dest})")
                 continue
-            if move:
-                shutil.move(src, final_dest)
-            else:
-                shutil.copy2(src, final_dest)
+            movies._transfer(src, final_dest, move)
             print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
             for sub_src, sub_dest in item["subtitles"]:
-                if move:
-                    shutil.move(sub_src, sub_dest)
-                else:
-                    shutil.copy2(sub_src, sub_dest)
+                movies._transfer(sub_src, sub_dest, move)
                 print(f"    + subtitle: {os.path.basename(sub_dest)}")
 
             for url, art_dest in item["artwork_files"].items():
