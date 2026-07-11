@@ -73,6 +73,25 @@ assumed to be the same copy and skipped, and a different file gets a
 `(1)`-style suffix — Jellyfin shows those as multiple versions of the
 movie. The same applies in TV mode.
 
+Artwork is picked by language preference (`--image-langs`, default `en`)
+before popularity, so a heavily-voted foreign poster doesn't win over a
+sensible one in your language; backdrops prefer textless images.
+
+### Refreshing artwork on an organized library
+
+Files inside a `[tmdbid-N]` folder are recognized directly — no TMDB
+search, no prompts. That means you can point the tool at your organized
+library (same folder as source and destination) to re-fetch artwork:
+
+```bash
+python3 jelly_tagger.py ~/Media/Movies ~/Media/Movies --mode movies \
+    --refresh-artwork --image-langs en,fr --yes
+```
+
+Videos are left untouched (already in place); missing artwork is filled in,
+and with `--refresh-artwork` existing images are replaced with the current
+best pick.
+
 ## TV mode
 
 ```
@@ -179,6 +198,8 @@ python3 jelly_tagger.py ~/Downloads/tv ~/Media/Shows --mode tv --move
 |------------------------|---------------------------------------------------------------------|
 | `--mode music\|movies\|tv` | Library type to organize (default: `music`)                     |
 | `--tmdb-api-key KEY`  | TMDB API key for movies/tv modes (or set `TMDB_API_KEY` env var)    |
+| `--image-langs LANGS` | Comma-separated language preference for posters/logos, e.g. `en,fr` (default: `en`) |
+| `--refresh-artwork`   | Re-download artwork even if the image files already exist           |
 | `--move`              | Move files instead of copying them (deletes originals)              |
 | `--yes`, `-y`         | Skip the final copy/move confirmation prompt                        |
 | `--dry-run`           | Print the plan only; don't touch any files                          |

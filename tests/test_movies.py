@@ -44,7 +44,7 @@ def test_best_image_prefer_lang():
         {"file_path": "/fr.jpg", "iso_639_1": "fr", "vote_count": 100},
         {"file_path": "/en.jpg", "iso_639_1": "en", "vote_count": 5},
     ]
-    assert _best_image(images, prefer_lang="en") == TMDB_IMAGE_BASE + "/en.jpg"
+    assert _best_image(images, prefer_langs=("en",)) == TMDB_IMAGE_BASE + "/en.jpg"
 
 
 def test_best_image_prefer_lang_falls_back_when_no_match():
@@ -52,7 +52,41 @@ def test_best_image_prefer_lang_falls_back_when_no_match():
         {"file_path": "/fr.jpg", "iso_639_1": "fr", "vote_count": 100},
     ]
     # No "en" images: filter is a no-op, best overall is returned.
-    assert _best_image(images, prefer_lang="en") == TMDB_IMAGE_BASE + "/fr.jpg"
+    assert _best_image(images, prefer_langs=("en",)) == TMDB_IMAGE_BASE + "/fr.jpg"
+
+
+def test_best_image_prefer_langs_in_order():
+    images = [
+        {"file_path": "/el.jpg", "iso_639_1": "el", "vote_count": 100},
+        {"file_path": "/fr.jpg", "iso_639_1": "fr", "vote_count": 5},
+        {"file_path": "/textless.jpg", "iso_639_1": None, "vote_count": 50},
+    ]
+    # No "en" available: second preference ("fr") wins over higher-voted Greek.
+    assert _best_image(images, prefer_langs=("en", "fr")) == TMDB_IMAGE_BASE + "/fr.jpg"
+    # None means textless/no-language.
+    assert _best_image(images, prefer_langs=(None,)) == TMDB_IMAGE_BASE + "/textless.jpg"
+
+
+def test_get_images_language_preferences():
+    client = TMDBClient("key", image_langs=("en", "fr"))
+    data = {
+        "posters": [
+            {"file_path": "/el-poster.jpg", "iso_639_1": "el", "vote_count": 100},
+            {"file_path": "/en-poster.jpg", "iso_639_1": "en", "vote_count": 3},
+        ],
+        "backdrops": [
+            {"file_path": "/en-backdrop.jpg", "iso_639_1": "en", "vote_count": 100},
+            {"file_path": "/clean-backdrop.jpg", "iso_639_1": None, "vote_count": 3},
+        ],
+        "logos": [],
+    }
+    with mock.patch.object(client, "_get", return_value=data):
+        images = client.get_images(1)
+    # Posters prefer the configured languages over raw popularity.
+    assert images["poster"] == TMDB_IMAGE_BASE + "/en-poster.jpg"
+    # Backdrops prefer textless.
+    assert images["backdrop"] == TMDB_IMAGE_BASE + "/clean-backdrop.jpg"
+    assert images["logo"] is None
 
 
 def test_best_image_vote_count_ordering():
@@ -321,6 +355,86 @@ def test_execute_movie_plan_rerun_skips_existing_copy(tmp_path, capsys):
     files = sorted(p.name for p in movie_dir.iterdir())
     assert files == ["Juno (2007).mkv"]
     assert src.exists()
+
+
+# ---------------------------------------------------------------------------
+# match_from_path + artwork refresh (re-runs over an organized library)
+# ---------------------------------------------------------------------------
+
+def test_match_from_path_movie_folder():
+    match = movies.match_from_path("/lib/Juno (2007) [tmdbid-7326]/Juno (2007).mkv")
+    assert match["id"] == 7326
+    assert match["title"] == "Juno"
+    assert match["year"] == 2007
+
+
+def test_match_from_path_show_season_folder():
+    match = movies.match_from_path(
+        "/lib/Breaking Bad (2008) [tmdbid-1396]/Season 01/Breaking Bad (2008) S01E01.mkv"
+    )
+    assert match["id"] == 1396
+    assert match["title"] == "Breaking Bad"
+
+
+def test_match_from_path_no_tag():
+    assert movies.match_from_path("/downloads/Juno.2007.1080p.mkv") is None
+
+
+def test_build_movie_plan_uses_tmdbid_folder_without_prompting(tmp_path):
+    movie_dir = tmp_path / "Juno (2007) [tmdbid-7326]"
+    movie_dir.mkdir()
+    video = movie_dir / "Juno (2007).mkv"
+    video.touch()
+
+    client = movies.TMDBClient("fake")
+    images = {"posters": [], "backdrops": [], "logos": []}
+    calls = []
+
+    def fake_get(path, params):
+        calls.append(path)
+        return images
+
+    with mock.patch.object(client, "_get", side_effect=fake_get), \
+         mock.patch("builtins.input", side_effect=AssertionError("should not prompt")):
+        plan = movies.build_movie_plan([str(video)], str(tmp_path), client)
+
+    assert len(plan) == 1
+    assert plan[0]["tmdb_id"] == 7326
+    # Re-organizing in place: dest is the same file.
+    assert plan[0]["dest"] == str(video)
+    # Only the images endpoint was hit, never search.
+    assert all("/images" in c for c in calls)
+
+
+def test_execute_movie_plan_downloads_missing_artwork_on_skip(tmp_path):
+    movie_dir = tmp_path / "Juno (2007) [tmdbid-7326]"
+    movie_dir.mkdir()
+    video = movie_dir / "Juno (2007).mkv"
+    video.write_bytes(b"content")
+    poster = movie_dir / "Juno (2007).jpg"
+    poster.write_bytes(b"old-poster")
+
+    plan = [{"src": str(video), "dest": str(video), "movie_dir": str(movie_dir),
+             "title": "Juno", "year": 2007, "tmdb_id": 7326, "subtitles": [],
+             "artwork_files": {"http://x/p.jpg": str(poster),
+                               "http://x/b.jpg": str(movie_dir / "backdrop.jpg")}}]
+
+    downloads = []
+    with mock.patch.object(movies, "_download",
+                           side_effect=lambda url, d: downloads.append(d) or open(d, "wb").write(b"new")):
+        movies.execute_movie_plan(plan, move=False)
+
+    # Video skipped (src == dest), missing backdrop fetched, existing poster kept.
+    assert downloads == [str(movie_dir / "backdrop.jpg")]
+    assert poster.read_bytes() == b"old-poster"
+
+    # With refresh_artwork, existing images are replaced too.
+    downloads.clear()
+    with mock.patch.object(movies, "_download",
+                           side_effect=lambda url, d: downloads.append(d) or open(d, "wb").write(b"new")):
+        movies.execute_movie_plan(plan, move=False, refresh_artwork=True)
+    assert sorted(downloads) == sorted([str(poster), str(movie_dir / "backdrop.jpg")])
+    assert poster.read_bytes() == b"new"
 
 
 # ---------------------------------------------------------------------------

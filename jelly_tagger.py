@@ -218,6 +218,14 @@ def main():
         "--tmdb-api-key", default=os.environ.get("TMDB_API_KEY"),
         help="TMDB API key (movies/tv mode only). Falls back to the TMDB_API_KEY env var.",
     )
+    parser.add_argument(
+        "--image-langs", default="en",
+        help="Comma-separated language preference for TMDB posters/logos, e.g. 'en,fr' (default: en)",
+    )
+    parser.add_argument(
+        "--refresh-artwork", action="store_true",
+        help="Re-download artwork even if the image files already exist",
+    )
     parser.add_argument("--move", action="store_true", help="Move files instead of copying (deletes originals)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--dry-run", action="store_true", help="Show the plan only, don't touch any files")
@@ -272,7 +280,7 @@ def run_movies_mode(args):
         print("No movie files found in that folder.")
         return
 
-    tmdb_client = movies.TMDBClient(args.tmdb_api_key)
+    tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
     cache = movies.ResolutionCache(args.source)
     plan = movies.build_movie_plan(video_files, args.dest, tmdb_client, cache=cache)
     print()
@@ -292,7 +300,7 @@ def run_movies_mode(args):
             print("Aborted.")
             return
 
-    movies.execute_movie_plan(plan, move=args.move)
+    movies.execute_movie_plan(plan, move=args.move, refresh_artwork=args.refresh_artwork)
 
 
 def run_tv_mode(args):
@@ -311,7 +319,7 @@ def run_tv_mode(args):
         print("No episode files found in that folder.")
         return
 
-    tmdb_client = movies.TMDBClient(args.tmdb_api_key)
+    tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
     cache = movies.ResolutionCache(args.source)
     plan = tv.build_tv_plan(episode_files, args.dest, tmdb_client, cache=cache)
     print()
@@ -331,7 +339,7 @@ def run_tv_mode(args):
             print("Aborted.")
             return
 
-    tv.execute_tv_plan(plan, move=args.move)
+    tv.execute_tv_plan(plan, move=args.move, refresh_artwork=args.refresh_artwork)
 
 
 if __name__ == "__main__":

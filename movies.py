@@ -68,20 +68,28 @@ def guess_title_year(filename: str):
     return name or os.path.splitext(filename)[0], year
 
 
-def _best_image(images, prefer_lang=None):
+def _best_image(images, prefer_langs=()):
+    """Pick the best image, narrowing to the first preferred language that has
+    any matches (None means textless/no-language) before ranking by votes."""
     if not images:
         return None
-    if prefer_lang is not None:
-        lang_matches = [img for img in images if img.get("iso_639_1") == prefer_lang]
+    for lang in prefer_langs:
+        lang_matches = [img for img in images if img.get("iso_639_1") == lang]
         if lang_matches:
             images = lang_matches
-    images = sorted(images, key=lambda i: i.get("vote_count", 0), reverse=True)
+            break
+    images = sorted(
+        images,
+        key=lambda i: (i.get("vote_count", 0), i.get("vote_average", 0)),
+        reverse=True,
+    )
     return TMDB_IMAGE_BASE + images[0]["file_path"]
 
 
 class TMDBClient:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, image_langs=("en",)):
         self.api_key = api_key
+        self.image_langs = tuple(image_langs)
 
     def _get(self, path: str, params: dict):
         query = dict(params)
@@ -111,14 +119,16 @@ class TMDBClient:
             })
         return candidates
 
-    def get_images(self, tmdb_id: int):
-        data = self._get(f"/movie/{tmdb_id}/images", {})
-
-        poster = _best_image(data.get("posters", []))
-        backdrop = _best_image(data.get("backdrops", []))
-        logo = _best_image(data.get("logos", []), prefer_lang="en") or _best_image(data.get("logos", []))
-
+    def _pick_images(self, data):
+        # Posters and logos read best in a preferred language; backdrops read
+        # best textless (no language), since they sit behind the UI.
+        poster = _best_image(data.get("posters", []), prefer_langs=self.image_langs + (None,))
+        backdrop = _best_image(data.get("backdrops", []), prefer_langs=(None,) + self.image_langs)
+        logo = _best_image(data.get("logos", []), prefer_langs=self.image_langs + (None,))
         return {"poster": poster, "backdrop": backdrop, "logo": logo}
+
+    def get_images(self, tmdb_id: int):
+        return self._pick_images(self._get(f"/movie/{tmdb_id}/images", {}))
 
     def search_tv(self, name: str, year=None):
         params = {"query": name, "include_adult": "false"}
@@ -137,13 +147,32 @@ class TMDBClient:
         return candidates
 
     def get_tv_images(self, tv_id: int):
-        data = self._get(f"/tv/{tv_id}/images", {})
+        return self._pick_images(self._get(f"/tv/{tv_id}/images", {}))
 
-        poster = _best_image(data.get("posters", []))
-        backdrop = _best_image(data.get("backdrops", []))
-        logo = _best_image(data.get("logos", []), prefer_lang="en") or _best_image(data.get("logos", []))
 
-        return {"poster": poster, "backdrop": backdrop, "logo": logo}
+# A folder already organized by this tool (or Jellyfin conventions), e.g.
+# "Juno (2007) [tmdbid-7326]".
+TMDBID_DIR_RE = re.compile(r"^(?P<title>.*?)(?:\s*\((?P<year>\d{4})\))?\s*\[tmdbid-(?P<id>\d+)\]$")
+
+
+def match_from_path(video_path: str):
+    """If a parent folder carries a [tmdbid-N] tag, build the match from it.
+
+    Lets re-runs over an already-organized library (e.g. to refresh artwork)
+    resolve without TMDB searches or prompting.
+    """
+    directory = os.path.dirname(video_path)
+    for _ in range(2):  # parent, then grandparent (for Season X subfolders)
+        m = TMDBID_DIR_RE.match(os.path.basename(directory))
+        if m:
+            return {
+                "id": int(m.group("id")),
+                "title": m.group("title").strip(),
+                "year": int(m.group("year")) if m.group("year") else None,
+                "overview": "",
+            }
+        directory = os.path.dirname(directory)
+    return None
 
 
 class ResolutionCache:
@@ -325,7 +354,12 @@ def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=
     for video_path in video_files:
         cache_key = f"movie:{os.path.basename(video_path)}"
         cached = cache.get(cache_key) if cache else None
-        if cached is not None:
+        from_path = match_from_path(video_path)
+        if from_path is not None:
+            match = from_path
+            print(f"{os.path.basename(video_path)}: tmdbid from folder name "
+                  f"[tmdbid-{match['id']}]")
+        elif cached is not None:
             if cached.get("skipped"):
                 print(f"Skipping {os.path.basename(video_path)} (cached answer)")
                 continue
@@ -444,7 +478,10 @@ def _resolve_collision(src: str, dest: str):
     base, ext = os.path.splitext(dest)
     candidate = dest
     counter = 1
-    while os.path.exists(candidate) and os.path.abspath(candidate) != os.path.abspath(src):
+    while os.path.exists(candidate):
+        if os.path.abspath(candidate) == os.path.abspath(src):
+            # Already organized in place; nothing to transfer.
+            return candidate, True
         if os.path.getsize(candidate) == os.path.getsize(src):
             return candidate, True
         candidate = f"{base} ({counter}){ext}"
@@ -452,7 +489,21 @@ def _resolve_collision(src: str, dest: str):
     return candidate, False
 
 
-def execute_movie_plan(plan, move: bool):
+def _download_artwork(item, label, errors, refresh: bool):
+    """Fetch the item's artwork files, skipping ones already on disk unless
+    refresh is set. Failures are collected, never fatal."""
+    for url, art_dest in item["artwork_files"].items():
+        if os.path.exists(art_dest) and not refresh:
+            continue
+        try:
+            _download(url, art_dest)
+            print(f"    + artwork: {os.path.basename(art_dest)}")
+        except Exception as e:
+            errors.append(f"{label}: artwork {os.path.basename(art_dest)}: {e}")
+            print(f"    ERROR downloading {os.path.basename(art_dest)}: {e}")
+
+
+def execute_movie_plan(plan, move: bool, refresh_artwork: bool = False):
     errors = []
     total = len(plan)
     for i, item in enumerate(plan, start=1):
@@ -465,21 +516,15 @@ def execute_movie_plan(plan, move: bool):
             final_dest, skip = _resolve_collision(src, dest)
             if skip:
                 print(f"[{i}/{total}] Already at destination, skipping: {label} ({final_dest})")
-                continue
-            _transfer(src, final_dest, move)
-            print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
+            else:
+                _transfer(src, final_dest, move)
+                print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
-            for sub_src, sub_dest in item["subtitles"]:
-                _transfer(sub_src, sub_dest, move)
-                print(f"    + subtitle: {os.path.basename(sub_dest)}")
+                for sub_src, sub_dest in item["subtitles"]:
+                    _transfer(sub_src, sub_dest, move)
+                    print(f"    + subtitle: {os.path.basename(sub_dest)}")
 
-            for url, art_dest in item["artwork_files"].items():
-                try:
-                    _download(url, art_dest)
-                    print(f"    + artwork: {os.path.basename(art_dest)}")
-                except Exception as e:
-                    errors.append(f"{label}: artwork {os.path.basename(art_dest)}: {e}")
-                    print(f"    ERROR downloading {os.path.basename(art_dest)}: {e}")
+            _download_artwork(item, label, errors, refresh_artwork)
 
         except Exception as e:
             errors.append(f"{label}: {e}")

@@ -182,7 +182,11 @@ def build_tv_plan(episode_files, dest_dir: str, tmdb_client, cache=None):
         group = groups[key]
         cache_key = f"tv:{key}"
         cached = cache.get(cache_key) if cache else None
-        if cached is not None:
+        from_path = movies.match_from_path(group["episodes"][0][0])
+        if from_path is not None:
+            match = from_path
+            print(f"{group['name']}: tmdbid from folder name [tmdbid-{match['id']}]")
+        elif cached is not None:
             if cached.get("skipped"):
                 print(f"Skipping show \"{group['name']}\" (cached answer)")
                 continue
@@ -266,7 +270,7 @@ def print_tv_plan(plan):
     print(f"\n{len(plan)} episode(s) total.")
 
 
-def execute_tv_plan(plan, move: bool):
+def execute_tv_plan(plan, move: bool, refresh_artwork: bool = False):
     errors = []
     total = len(plan)
     for i, item in enumerate(plan, start=1):
@@ -279,21 +283,15 @@ def execute_tv_plan(plan, move: bool):
             final_dest, skip = movies._resolve_collision(src, dest)
             if skip:
                 print(f"[{i}/{total}] Already at destination, skipping: {label} ({final_dest})")
-                continue
-            movies._transfer(src, final_dest, move)
-            print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
+            else:
+                movies._transfer(src, final_dest, move)
+                print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
-            for sub_src, sub_dest in item["subtitles"]:
-                movies._transfer(sub_src, sub_dest, move)
-                print(f"    + subtitle: {os.path.basename(sub_dest)}")
+                for sub_src, sub_dest in item["subtitles"]:
+                    movies._transfer(sub_src, sub_dest, move)
+                    print(f"    + subtitle: {os.path.basename(sub_dest)}")
 
-            for url, art_dest in item["artwork_files"].items():
-                try:
-                    movies._download(url, art_dest)
-                    print(f"    + artwork: {os.path.basename(art_dest)}")
-                except Exception as e:
-                    errors.append(f"{label}: artwork {os.path.basename(art_dest)}: {e}")
-                    print(f"    ERROR downloading {os.path.basename(art_dest)}: {e}")
+            movies._download_artwork(item, label, errors, refresh_artwork)
 
         except Exception as e:
             errors.append(f"{label}: {e}")
