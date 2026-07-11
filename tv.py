@@ -160,7 +160,7 @@ def resolve_show(name_guess: str, year_guess, tmdb_client):
     )
 
 
-def build_tv_plan(episode_files, dest_dir: str, tmdb_client):
+def build_tv_plan(episode_files, dest_dir: str, tmdb_client, cache=None):
     if not episode_files:
         return []
 
@@ -180,7 +180,19 @@ def build_tv_plan(episode_files, dest_dir: str, tmdb_client):
     plan = []
     for key in order:
         group = groups[key]
-        match = resolve_show(group["name"], group["year"], tmdb_client)
+        cache_key = f"tv:{key}"
+        cached = cache.get(cache_key) if cache else None
+        if cached is not None:
+            if cached.get("skipped"):
+                print(f"Skipping show \"{group['name']}\" (cached answer)")
+                continue
+            match = cached
+            print(f"{group['name']}: cached match "
+                  f"{match['title']} ({match['year']}) [tmdbid-{match['id']}]")
+        else:
+            match = resolve_show(group["name"], group["year"], tmdb_client)
+            if cache:
+                cache.set(cache_key, match if match else {"skipped": True})
         if match is None:
             print(f"  Skipping show \"{group['name']}\" ({len(group['episodes'])} episode(s))")
             continue

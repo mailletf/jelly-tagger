@@ -46,8 +46,18 @@ filename (stripping resolution/codec/release-group tags like `1080p`,
 `BluRay`, `x264`, etc.), searches TMDB for a match, and:
 
 - **auto-picks** the match if there's exactly one exact title+year hit
+- if nothing matches, **automatically retries** with simpler queries
+  (dropping a leading collection index like `03 `, keeping only the part
+  before ` - `, then trimming trailing words) until candidates show up
 - otherwise **prompts you interactively** with a numbered list of
   candidates — pick one, type a new search term, or `s` to skip that file
+
+Your answers are saved to a `.jelly-tagger-cache.json` file in the source
+folder as you go, so if you interrupt a long run (Ctrl+C) and restart,
+already-confirmed matches and skips aren't asked again. Delete that file to
+start fresh. (Note that no files are copied/moved until you approve the
+final confirmation prompt — interrupting before that leaves the source
+untouched.)
 
 This confirmation step always runs (even with `--yes`, which only skips the
 final "proceed with copy?" prompt), since a wrong TMDB match is hard to

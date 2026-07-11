@@ -273,7 +273,8 @@ def run_movies_mode(args):
         return
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key)
-    plan = movies.build_movie_plan(video_files, args.dest, tmdb_client)
+    cache = movies.ResolutionCache(args.source)
+    plan = movies.build_movie_plan(video_files, args.dest, tmdb_client, cache=cache)
     print()
     movies.print_movie_plan(plan)
 
@@ -311,7 +312,8 @@ def run_tv_mode(args):
         return
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key)
-    plan = tv.build_tv_plan(episode_files, args.dest, tmdb_client)
+    cache = movies.ResolutionCache(args.source)
+    plan = tv.build_tv_plan(episode_files, args.dest, tmdb_client, cache=cache)
     print()
     tv.print_tv_plan(plan)
 

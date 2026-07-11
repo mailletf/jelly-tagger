@@ -130,25 +130,122 @@ def test_resolve_interactive_numbered_pick():
 
 def test_resolve_interactive_free_text_research_then_match():
     def search(name, year):
-        if name == "Wrong Name":
-            return []
-        return [cand(9, "Right Name", 2010)]
+        if name == "Right Name":
+            return [cand(9, "Right Name", 2010)]
+        return []
 
     search_fn = mock.Mock(side_effect=search)
     with mock.patch("builtins.input", return_value="Right Name"):
         out = resolve_interactive("hdr", search_fn, "Wrong Name", 1999, "prompt: ")
     assert out["id"] == 9
-    # First search with guess, second with the typed term (year reset).
-    assert search_fn.call_args_list == [
-        mock.call("Wrong Name", 1999),
-        mock.call("Right Name", None),
-    ]
+    # First search with the guess; the last with the typed term (year reset).
+    # Automatic fallback retries may happen in between.
+    assert search_fn.call_args_list[0] == mock.call("Wrong Name", 1999)
+    assert search_fn.call_args_list[-1] == mock.call("Right Name", None)
 
 
 def test_resolve_interactive_skip():
     search_fn = mock.Mock(return_value=[])
     with mock.patch("builtins.input", return_value="s"):
         assert resolve_interactive("hdr", search_fn, "Nothing", None, "prompt: ") is None
+
+
+def test_fallback_queries_strip_index_segment_and_words():
+    queries = movies._fallback_queries(
+        "03 Die Hard 3 Die Hard With A Vengeance - Bruce Willis Action"
+    )
+    assert queries[0] == "Die Hard 3 Die Hard With A Vengeance - Bruce Willis Action"
+    assert "03 Die Hard 3 Die Hard With A Vengeance" in queries
+    assert "Die Hard 3 Die Hard With A Vengeance" in queries
+    assert "Die Hard 3" in queries
+    assert "Die Hard" in queries
+    # No duplicates.
+    assert len({q.casefold() for q in queries}) == len(queries)
+
+
+def test_fallback_queries_single_word_yields_nothing():
+    assert movies._fallback_queries("Juno") == []
+
+
+def test_resolve_interactive_fallback_finds_candidates():
+    die_hard = cand(1572, "Die Hard: With a Vengeance", 1995)
+
+    def search(name, year):
+        return [die_hard] if name == "Die Hard 3" else []
+
+    search_fn = mock.Mock(side_effect=search)
+    with mock.patch("builtins.input", return_value="1"):
+        out = resolve_interactive(
+            "hdr", search_fn,
+            "03 Die Hard 3 Die Hard With A Vengeance - Bruce Willis Action", 1995,
+            "prompt: ",
+        )
+    assert out["id"] == 1572
+    # The fallback retry that hit was with the year still applied.
+    assert mock.call("Die Hard 3", 1995) in search_fn.call_args_list
+
+
+def test_resolve_interactive_fallback_exhausted_still_prompts():
+    search_fn = mock.Mock(return_value=[])
+    with mock.patch("builtins.input", return_value="s"):
+        out = resolve_interactive("hdr", search_fn, "Some Junk Name Here", 1995, "prompt: ")
+    assert out is None
+    # Tried the guess plus fallback variants before giving up and prompting.
+    assert len(search_fn.call_args_list) > 1
+
+
+# ---------------------------------------------------------------------------
+# ResolutionCache
+# ---------------------------------------------------------------------------
+
+def test_resolution_cache_persists_across_instances(tmp_path):
+    cache = movies.ResolutionCache(str(tmp_path))
+    cache.set("movie:Juno.mkv", {"id": 7326, "title": "Juno", "year": 2007})
+    cache.set("movie:Junk.mkv", {"skipped": True})
+
+    reloaded = movies.ResolutionCache(str(tmp_path))
+    assert reloaded.get("movie:Juno.mkv")["id"] == 7326
+    assert reloaded.get("movie:Junk.mkv") == {"skipped": True}
+    assert reloaded.get("movie:Other.mkv") is None
+
+
+def test_build_movie_plan_uses_cache_without_prompting(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    video = src / "Juno.2007.1080p.mkv"
+    video.touch()
+
+    cache = movies.ResolutionCache(str(src))
+    cache.set("movie:Juno.2007.1080p.mkv", {"id": 7326, "title": "Juno", "year": 2007})
+
+    client = movies.TMDBClient("fake")
+    images = {"posters": [], "backdrops": [], "logos": []}
+    with mock.patch.object(client, "_get", return_value=images), \
+         mock.patch("builtins.input", side_effect=AssertionError("should not prompt")):
+        plan = movies.build_movie_plan([str(video)], str(tmp_path / "dest"), client, cache=cache)
+
+    assert len(plan) == 1
+    assert plan[0]["tmdb_id"] == 7326
+
+
+def test_build_movie_plan_caches_skip(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    video = src / "Unknown.Thing.mkv"
+    video.touch()
+
+    cache = movies.ResolutionCache(str(src))
+    client = movies.TMDBClient("fake")
+    with mock.patch.object(client, "_get", return_value={"results": []}), \
+         mock.patch("builtins.input", return_value="s"):
+        plan = movies.build_movie_plan([str(video)], str(tmp_path / "dest"), client, cache=cache)
+    assert plan == []
+    assert cache.get("movie:Unknown.Thing.mkv") == {"skipped": True}
+
+    # Second run: no prompting at all.
+    with mock.patch("builtins.input", side_effect=AssertionError("should not prompt")):
+        plan = movies.build_movie_plan([str(video)], str(tmp_path / "dest"), client, cache=cache)
+    assert plan == []
 
 
 # ---------------------------------------------------------------------------

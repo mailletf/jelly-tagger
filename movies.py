@@ -145,11 +145,75 @@ class TMDBClient:
         return {"poster": poster, "backdrop": backdrop, "logo": logo}
 
 
+class ResolutionCache:
+    """Remembers confirmed TMDB matches (and skips) across interrupted runs.
+
+    Stored as .jelly-tagger-cache.json in the source folder; saved after every
+    answer so Ctrl+C doesn't lose the matches already confirmed. Delete the
+    file to be asked again.
+    """
+
+    def __init__(self, source_dir: str):
+        self.path = os.path.join(source_dir, ".jelly-tagger-cache.json")
+        self.data = {}
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                self.data = json.load(f)
+        except (OSError, ValueError):
+            pass
+
+    def get(self, key: str):
+        return self.data.get(key)
+
+    def set(self, key: str, value):
+        self.data[key] = value
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=2)
+        except OSError:
+            pass
+
+
 def _print_candidates(candidates):
     for i, c in enumerate(candidates, start=1):
         year_str = c["year"] or "----"
         overview = (c["overview"][:80] + "...") if len(c["overview"]) > 80 else c["overview"]
         print(f"  [{i}] {c['title']} ({year_str}) [tmdbid-{c['id']}]  {overview}")
+
+
+def _fallback_queries(name: str):
+    """Simpler search terms to retry with when a name returns no matches."""
+    seen = {name.casefold()}
+    queries = []
+
+    def add(q):
+        q = q.strip(" -.")
+        if q and q.casefold() not in seen:
+            seen.add(q.casefold())
+            queries.append(q)
+
+    # A leading index number ("03 Die Hard 3 ...") is usually a collection
+    # prefix, not part of the title.
+    deindexed = re.sub(r"^\d{1,2}\s*[-.]?\s+", "", name)
+    add(deindexed)
+    # The first " - " segment is often the real title.
+    add(name.split(" - ")[0])
+    add(deindexed.split(" - ")[0])
+    # Progressively drop trailing words.
+    words = (queries[-1] if queries else name).split()
+    for n in range(len(words) - 1, 0, -1):
+        add(" ".join(words[:n]))
+    return queries
+
+
+def _fallback_attempts(name: str, year, limit: int = 12):
+    """(query, year) pairs to retry, with-year variants first."""
+    queries = _fallback_queries(name)
+    attempts = [(q, year) for q in queries]
+    if year:
+        attempts.append((name, None))
+        attempts.extend((q, None) for q in queries)
+    return attempts[:limit]
 
 
 def resolve_interactive(header: str, search_fn, guessed_name, guessed_year, skip_prompt: str):
@@ -170,6 +234,20 @@ def resolve_interactive(header: str, search_fn, guessed_name, guessed_year, skip
         except RuntimeError as e:
             print(f"  ERROR: {e}")
             candidates = []
+
+        if not candidates:
+            # Nothing found: retry with progressively simpler queries before
+            # falling back to asking the user.
+            for query, qyear in _fallback_attempts(search_name, search_year):
+                try:
+                    retried = search_fn(query, qyear)
+                except RuntimeError:
+                    continue
+                if retried:
+                    print(f"  no matches; retried with: \"{query}\"" + (f" ({qyear})" if qyear else ""))
+                    candidates = retried
+                    search_name, search_year = query, qyear
+                    break
 
         exact = [
             c for c in candidates
@@ -241,10 +319,22 @@ def _find_sibling_subtitles(video_path: str):
     return subs
 
 
-def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient):
+def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=None):
     plan = []
     for video_path in video_files:
-        match = resolve_movie(video_path, tmdb_client)
+        cache_key = f"movie:{os.path.basename(video_path)}"
+        cached = cache.get(cache_key) if cache else None
+        if cached is not None:
+            if cached.get("skipped"):
+                print(f"Skipping {os.path.basename(video_path)} (cached answer)")
+                continue
+            match = cached
+            print(f"{os.path.basename(video_path)}: cached match "
+                  f"{match['title']} ({match['year']}) [tmdbid-{match['id']}]")
+        else:
+            match = resolve_movie(video_path, tmdb_client)
+            if cache:
+                cache.set(cache_key, match if match else {"skipped": True})
         if match is None:
             print(f"  Skipping {os.path.basename(video_path)}")
             continue
