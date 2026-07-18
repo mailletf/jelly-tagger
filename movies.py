@@ -64,7 +64,8 @@ def guess_title_year(filename: str):
     name = name.replace(".", " ").replace("_", " ")
 
     year = None
-    year_match = YEAR_RE.search(name)
+    year_matches = list(YEAR_RE.finditer(name))
+    year_match = year_matches[-1] if year_matches else None
     if year_match:
         year = int(year_match.group(1))
         # Title is everything before the year.
