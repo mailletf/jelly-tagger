@@ -195,9 +195,12 @@ class ResolutionCache:
     file to be asked again.
     """
 
-    def __init__(self, source_dir: str):
+    def __init__(self, source_dir: str, disabled: bool = False):
+        self.disabled = disabled
         self.path = os.path.join(source_dir, ".jelly-tagger-cache.json")
         self.data = {}
+        if disabled:
+            return
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
@@ -205,9 +208,13 @@ class ResolutionCache:
             pass
 
     def get(self, key: str):
+        if self.disabled:
+            return None
         return self.data.get(key)
 
     def set(self, key: str, value):
+        if self.disabled:
+            return
         self.data[key] = value
         try:
             with open(self.path, "w", encoding="utf-8") as f:

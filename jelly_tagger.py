@@ -226,6 +226,10 @@ def main():
         "--refresh-artwork", action="store_true",
         help="Re-download artwork even if the image files already exist",
     )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="Ignore and don't update .jelly-tagger-cache.json (movies/tv mode only)",
+    )
     parser.add_argument("--move", action="store_true", help="Move files instead of copying (deletes originals)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--dry-run", action="store_true", help="Show the plan only, don't touch any files")
@@ -285,7 +289,7 @@ def run_movies_mode(args):
         return
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
-    cache = movies.ResolutionCache(args.source)
+    cache = movies.ResolutionCache(args.source, disabled=args.no_cache)
     plan = movies.build_movie_plan(video_files, args.dest, tmdb_client, cache=cache)
     print()
     movies.print_movie_plan(plan)
@@ -324,7 +328,7 @@ def run_tv_mode(args):
         return
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
-    cache = movies.ResolutionCache(args.source)
+    cache = movies.ResolutionCache(args.source, disabled=args.no_cache)
     plan = tv.build_tv_plan(episode_files, args.dest, tmdb_client, cache=cache)
     print()
     tv.print_tv_plan(plan)
