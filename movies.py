@@ -28,6 +28,17 @@ from jelly_tagger import sanitize
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv"}
 SUBTITLE_EXTENSIONS = {".srt", ".sub"}
 
+# Below this size, a video file is almost certainly a sample/trailer/extra
+# rather than a full movie.
+MIN_MOVIE_SIZE_BYTES = 150 * 1024 * 1024
+
+# Filenames containing these words (as whole words) are skipped regardless
+# of size, since scene releases sometimes ship large "extra" files too.
+NON_MOVIE_NAME_RE = re.compile(
+    r"\b(sample|trailer|extra|featurette|deleted|behindthescenes)\b",
+    re.IGNORECASE,
+)
+
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original"
 
@@ -322,12 +333,18 @@ def resolve_movie(video_path: str, tmdb_client: TMDBClient):
     )
 
 
-def find_video_files(source_dir: str):
+def find_video_files(source_dir: str, min_size_bytes: int = 0, skip_extras: bool = False):
     video_files = []
     for root, _, files in os.walk(source_dir):
         for f in files:
-            if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS:
-                video_files.append(os.path.join(root, f))
+            if os.path.splitext(f)[1].lower() not in VIDEO_EXTENSIONS:
+                continue
+            if skip_extras and NON_MOVIE_NAME_RE.search(f):
+                continue
+            path = os.path.join(root, f)
+            if os.path.getsize(path) < min_size_bytes:
+                continue
+            video_files.append(path)
     return sorted(video_files)
 
 

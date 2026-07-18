@@ -275,7 +275,11 @@ def run_movies_mode(args):
 
     import movies
 
-    video_files = movies.find_video_files(args.source)
+    video_files = movies.find_video_files(
+        args.source,
+        min_size_bytes=movies.MIN_MOVIE_SIZE_BYTES,
+        skip_extras=True,
+    )
     if not video_files:
         print("No movie files found in that folder.")
         return
