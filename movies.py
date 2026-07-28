@@ -374,7 +374,42 @@ def _find_sibling_subtitles(video_path: str):
     return subs
 
 
-def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=None):
+def plan_subtitle_downloads(video_path: str, dest_dir: str, base_name: str, subs_client, label: str):
+    """Find downloadable subtitles for a video, skipping languages already on disk.
+
+    Returns a list of (file_id, dest_path, release). The actual download link
+    is requested at execute time, since asking for it spends download quota.
+    """
+    if subs_client is None:
+        return []
+
+    # ".en" -> "en", and ".en.forced" -> "en", so an existing forced/SDH track
+    # still counts as having that language.
+    have = {
+        suffix.lstrip(".").split(".")[0].lower()
+        for _, suffix, _ in _find_sibling_subtitles(video_path)
+    }
+    try:
+        found = subs_client.find_for_file(video_path)
+    except Exception as e:
+        # Includes OSErrors from hashing the video itself (deleted, unmounted,
+        # or truncated mid-run) — one bad file must not kill the whole plan.
+        print(f"  WARNING: subtitle search failed for {label}: {e}")
+        return []
+
+    downloads = []
+    for sub in found:
+        if sub["language"] in have:
+            continue
+        dest = os.path.join(dest_dir, f"{base_name}.{sub['language']}.srt")
+        if os.path.exists(dest):
+            # Already downloaded by an earlier run; don't promise it again.
+            continue
+        downloads.append((sub["file_id"], dest, sub["release"]))
+    return downloads
+
+
+def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=None, subs_client=None):
     plan = []
     for video_path in video_files:
         cache_key = f"movie:{os.path.basename(video_path)}"
@@ -414,6 +449,10 @@ def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=
         for sub_src, suffix, sub_ext in _find_sibling_subtitles(video_path):
             subtitles.append((sub_src, os.path.join(movie_dir, f"{base_name}{suffix}{sub_ext}")))
 
+        fetch_subtitles = plan_subtitle_downloads(
+            video_path, movie_dir, base_name, subs_client, f"{title} ({year})"
+        )
+
         try:
             artwork = tmdb_client.get_images(tmdb_id)
         except RuntimeError as e:
@@ -436,6 +475,7 @@ def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=
             "year": year,
             "tmdb_id": tmdb_id,
             "subtitles": subtitles,
+            "fetch_subtitles": fetch_subtitles,
             "artwork_files": artwork_files,
         })
     return plan
@@ -449,6 +489,9 @@ def print_movie_plan(plan):
         print(f"{p['title']} ({p['year']}) [tmdbid-{p['tmdb_id']}]  ->  {p['dest']}")
         for _, sub_dest in p["subtitles"]:
             print(f"    + subtitle: {os.path.basename(sub_dest)}")
+        for _, sub_dest, release in p.get("fetch_subtitles", []):
+            suffix = f"  ({release})" if release else ""
+            print(f"    + subtitle (download): {os.path.basename(sub_dest)}{suffix}")
         for kind_dest in p["artwork_files"].values():
             print(f"    + artwork: {os.path.basename(kind_dest)}")
     print(f"\n{len(plan)} movie(s) total.")
@@ -528,7 +571,40 @@ def _download_artwork(item, label, errors, refresh: bool):
             print(f"    ERROR downloading {os.path.basename(art_dest)}: {e}")
 
 
-def execute_movie_plan(plan, move: bool, refresh_artwork: bool = False):
+def retarget_subtitle(sub_dest: str, dest: str, final_dest: str) -> str:
+    """Keep a subtitle attached to the video it actually belongs to.
+
+    When a video collides with an existing file it lands at "Movie (1).mkv"
+    instead of "Movie.mkv". Subtitle names are planned from the un-suffixed
+    base, so without this they'd sit next to — and be picked up for — the
+    *other* release, and a second run would overwrite the first one's.
+    """
+    if final_dest == dest:
+        return sub_dest
+    base = os.path.splitext(dest)[0]
+    if not sub_dest.startswith(base):
+        return sub_dest
+    return os.path.splitext(final_dest)[0] + sub_dest[len(base):]
+
+
+def _download_subtitles(item, label, errors, subs_client, dest=None, final_dest=None):
+    """Fetch the item's planned subtitles. Failures are collected, never fatal."""
+    if subs_client is None:
+        return
+    for file_id, sub_dest, _release in item.get("fetch_subtitles", []):
+        if dest is not None and final_dest is not None:
+            sub_dest = retarget_subtitle(sub_dest, dest, final_dest)
+        if os.path.exists(sub_dest):
+            continue
+        try:
+            _download(subs_client.download_link(file_id), sub_dest)
+            print(f"    + subtitle: {os.path.basename(sub_dest)}")
+        except Exception as e:
+            errors.append(f"{label}: subtitle {os.path.basename(sub_dest)}: {e}")
+            print(f"    ERROR downloading {os.path.basename(sub_dest)}: {e}")
+
+
+def execute_movie_plan(plan, move: bool, refresh_artwork: bool = False, subs_client=None):
     errors = []
     total = len(plan)
     for i, item in enumerate(plan, start=1):
@@ -546,10 +622,12 @@ def execute_movie_plan(plan, move: bool, refresh_artwork: bool = False):
                 print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
                 for sub_src, sub_dest in item["subtitles"]:
+                    sub_dest = retarget_subtitle(sub_dest, dest, final_dest)
                     _transfer(sub_src, sub_dest, move)
                     print(f"    + subtitle: {os.path.basename(sub_dest)}")
 
             _download_artwork(item, label, errors, refresh_artwork)
+            _download_subtitles(item, label, errors, subs_client, dest, final_dest)
 
         except Exception as e:
             errors.append(f"{label}: {e}")

@@ -160,7 +160,7 @@ def resolve_show(name_guess: str, year_guess, tmdb_client):
     )
 
 
-def build_tv_plan(episode_files, dest_dir: str, tmdb_client, cache=None):
+def build_tv_plan(episode_files, dest_dir: str, tmdb_client, cache=None, subs_client=None):
     if not episode_files:
         return []
 
@@ -234,6 +234,10 @@ def build_tv_plan(episode_files, dest_dir: str, tmdb_client, cache=None):
             for sub_src, suffix, sub_ext in movies._find_sibling_subtitles(video_path):
                 subtitles.append((sub_src, os.path.join(season_dir, f"{ep_base}{suffix}{sub_ext}")))
 
+            fetch_subtitles = movies.plan_subtitle_downloads(
+                video_path, season_dir, ep_base, subs_client, ep_base
+            )
+
             plan.append({
                 "src": video_path,
                 "dest": dest_video,
@@ -245,6 +249,7 @@ def build_tv_plan(episode_files, dest_dir: str, tmdb_client, cache=None):
                 "show_dir": show_dir,
                 "season_dir": season_dir,
                 "subtitles": subtitles,
+                "fetch_subtitles": fetch_subtitles,
                 # Artwork is fetched once per show and attached to its first
                 # episode so the execute loop can stay flat.
                 "artwork_files": artwork_files if idx == 0 else {},
@@ -265,12 +270,15 @@ def print_tv_plan(plan):
         print(f"    S{p['season']:02d}E{p['episode']:02d}  ->  {p['dest']}")
         for _, sub_dest in p["subtitles"]:
             print(f"        + subtitle: {os.path.basename(sub_dest)}")
+        for _, sub_dest, release in p.get("fetch_subtitles", []):
+            suffix = f"  ({release})" if release else ""
+            print(f"        + subtitle (download): {os.path.basename(sub_dest)}{suffix}")
         for art_dest in p["artwork_files"].values():
             print(f"        + artwork: {os.path.basename(art_dest)}")
     print(f"\n{len(plan)} episode(s) total.")
 
 
-def execute_tv_plan(plan, move: bool, refresh_artwork: bool = False):
+def execute_tv_plan(plan, move: bool, refresh_artwork: bool = False, subs_client=None):
     errors = []
     total = len(plan)
     for i, item in enumerate(plan, start=1):
@@ -288,10 +296,12 @@ def execute_tv_plan(plan, move: bool, refresh_artwork: bool = False):
                 print(f"[{i}/{total}] {'Moved' if move else 'Copied'}: {label} -> {final_dest}")
 
                 for sub_src, sub_dest in item["subtitles"]:
+                    sub_dest = movies.retarget_subtitle(sub_dest, dest, final_dest)
                     movies._transfer(sub_src, sub_dest, move)
                     print(f"    + subtitle: {os.path.basename(sub_dest)}")
 
             movies._download_artwork(item, label, errors, refresh_artwork)
+            movies._download_subtitles(item, label, errors, subs_client, dest, final_dest)
 
         except Exception as e:
             errors.append(f"{label}: {e}")

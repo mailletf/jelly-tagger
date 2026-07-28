@@ -69,6 +69,11 @@ except ImportError:
 
 INVALID_CHARS = re.compile(r'[<>:"/\\|?*]')
 
+# Placeholders read_tags falls back to when a tag is missing. Music mode uses
+# them to spot which fields an AcoustID lookup should fill in.
+UNKNOWN_ARTIST = "Unknown Artist"
+UNKNOWN_ALBUM = "Unknown Album"
+
 
 def sanitize(name: str) -> str:
     """Make a string safe to use as a file/folder name."""
@@ -80,7 +85,13 @@ def sanitize(name: str) -> str:
 
 
 def read_tags(filepath: str):
-    """Read artist/album/title/track number from an MP3 file's ID3 tags."""
+    """Read artist/album/title/track number from an MP3 file's ID3 tags.
+
+    A missing tag comes back as "" rather than as its placeholder, so callers
+    can tell "no tag" apart from "a tag that happens to read Unknown Artist"
+    or "a title that happens to match the filename". build_plan applies the
+    placeholders once it no longer needs that distinction.
+    """
     artist = album = title = ""
     track = ""
     try:
@@ -107,10 +118,9 @@ def read_tags(filepath: str):
         except Exception:
             pass
 
-    base = os.path.splitext(os.path.basename(filepath))[0]
-    artist = artist.strip() if artist else "Unknown Artist"
-    album = album.strip() if album else "Unknown Album"
-    title = title.strip() if title else base
+    artist = artist.strip() if artist else ""
+    album = album.strip() if album else ""
+    title = title.strip() if title else ""
 
     if track:
         try:
@@ -143,10 +153,48 @@ def find_mp3s(source_dir: str):
     return sorted(mp3_files)
 
 
-def build_plan(mp3_files, dest_dir):
+def fill_from_fingerprint(filepath, artist, album, title, fingerprinter):
+    """Fill in tags that are absent by identifying the audio itself.
+
+    Only fields with no tag at all are replaced, so a tag that is present
+    always wins over the fingerprint match — including a title that happens
+    to equal the filename, and a band genuinely called "Unknown Artist".
+    Files whose tags are all present are never sent to AcoustID.
+    """
+    if artist and album and title:
+        return artist, album, title
+
+    try:
+        found = fingerprinter.lookup(filepath)
+    except Exception as e:
+        # Never let one unreadable file or one bad response kill the run.
+        print(f"  WARNING: could not fingerprint {os.path.basename(filepath)}: {e}")
+        return artist, album, title
+
+    if not found:
+        print(f"  No AcoustID match for {os.path.basename(filepath)}")
+        return artist, album, title
+
+    artist = artist or found["artist"]
+    album = album or found["album"]
+    title = title or found["title"]
+
+    print(f"  Fingerprinted {os.path.basename(filepath)}: {artist} / {album} / {title}")
+    return artist, album, title
+
+
+def build_plan(mp3_files, dest_dir, fingerprinter=None):
     plan = []
     for filepath in mp3_files:
         artist, album, title, track = read_tags(filepath)
+        if fingerprinter is not None:
+            artist, album, title = fill_from_fingerprint(
+                filepath, artist, album, title, fingerprinter
+            )
+        # Whatever is still unknown falls back to a placeholder / the filename.
+        artist = artist or UNKNOWN_ARTIST
+        album = album or UNKNOWN_ALBUM
+        title = title or os.path.splitext(os.path.basename(filepath))[0]
         ext = os.path.splitext(filepath)[1]
         dest_path = build_dest_path(dest_dir, artist, album, title, track, ext)
         plan.append({
@@ -227,6 +275,32 @@ def main():
         help="Re-download artwork even if the image files already exist",
     )
     parser.add_argument(
+        "--opensubtitles-api-key", default=os.environ.get("OPENSUBTITLES_API_KEY"),
+        help="OpenSubtitles API key (movies/tv mode). Enables downloading subtitles "
+             "matched to each file's content hash. Falls back to OPENSUBTITLES_API_KEY.",
+    )
+    parser.add_argument(
+        "--opensubtitles-user", default=os.environ.get("OPENSUBTITLES_USER"),
+        help="OpenSubtitles account username, for a higher daily download quota",
+    )
+    parser.add_argument(
+        "--opensubtitles-password", default=os.environ.get("OPENSUBTITLES_PASSWORD"),
+        help="OpenSubtitles account password. Prefer the OPENSUBTITLES_PASSWORD env var.",
+    )
+    parser.add_argument(
+        "--sub-langs", default="en",
+        help="Comma-separated subtitle languages to fetch, best first, e.g. 'en,fr' (default: en)",
+    )
+    parser.add_argument(
+        "--acoustid-api-key", default=os.environ.get("ACOUSTID_API_KEY"),
+        help="AcoustID API key (music mode). Fingerprints files with missing tags and "
+             "fills them in. Requires Chromaprint's fpcalc. Falls back to ACOUSTID_API_KEY.",
+    )
+    parser.add_argument(
+        "--fpcalc", default="fpcalc",
+        help="Path to the Chromaprint fpcalc binary (default: found on PATH)",
+    )
+    parser.add_argument(
         "--no-cache", action="store_true",
         help="Ignore and don't update .jelly-tagger-cache.json (movies/tv mode only)",
     )
@@ -246,13 +320,40 @@ def main():
         run_music_mode(args)
 
 
+def make_subs_client(args):
+    """Build an OpenSubtitles client, or None when no API key was given."""
+    if not args.opensubtitles_api_key:
+        return None
+
+    langs = [lang.strip() for lang in args.sub_langs.split(",") if lang.strip()]
+    if not langs:
+        sys.exit("Error: --sub-langs is empty. Pass at least one language, e.g. --sub-langs en")
+
+    if bool(args.opensubtitles_user) != bool(args.opensubtitles_password):
+        print("WARNING: --opensubtitles-user and --opensubtitles-password must both be set "
+              "to get the higher download quota; continuing anonymously.")
+
+    import subtitles
+    return subtitles.OpenSubtitlesClient(
+        args.opensubtitles_api_key,
+        langs=langs,
+        username=args.opensubtitles_user,
+        password=args.opensubtitles_password,
+    )
+
+
 def run_music_mode(args):
     mp3_files = find_mp3s(args.source)
     if not mp3_files:
         print("No MP3 files found in that folder.")
         return
 
-    plan = build_plan(mp3_files, args.dest)
+    fingerprinter = None
+    if args.acoustid_api_key:
+        import fingerprint
+        fingerprinter = fingerprint.AcoustIDClient(args.acoustid_api_key, fpcalc_bin=args.fpcalc)
+
+    plan = build_plan(mp3_files, args.dest, fingerprinter=fingerprinter)
     print_plan(plan)
 
     if args.dry_run:
@@ -290,7 +391,10 @@ def run_movies_mode(args):
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
     cache = movies.ResolutionCache(args.source, disabled=args.no_cache)
-    plan = movies.build_movie_plan(video_files, args.dest, tmdb_client, cache=cache)
+    subs_client = make_subs_client(args)
+    plan = movies.build_movie_plan(
+        video_files, args.dest, tmdb_client, cache=cache, subs_client=subs_client
+    )
     print()
     movies.print_movie_plan(plan)
 
@@ -308,7 +412,9 @@ def run_movies_mode(args):
             print("Aborted.")
             return
 
-    movies.execute_movie_plan(plan, move=args.move, refresh_artwork=args.refresh_artwork)
+    movies.execute_movie_plan(
+        plan, move=args.move, refresh_artwork=args.refresh_artwork, subs_client=subs_client
+    )
 
 
 def run_tv_mode(args):
@@ -329,7 +435,10 @@ def run_tv_mode(args):
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
     cache = movies.ResolutionCache(args.source, disabled=args.no_cache)
-    plan = tv.build_tv_plan(episode_files, args.dest, tmdb_client, cache=cache)
+    subs_client = make_subs_client(args)
+    plan = tv.build_tv_plan(
+        episode_files, args.dest, tmdb_client, cache=cache, subs_client=subs_client
+    )
     print()
     tv.print_tv_plan(plan)
 
@@ -347,7 +456,9 @@ def run_tv_mode(args):
             print("Aborted.")
             return
 
-    tv.execute_tv_plan(plan, move=args.move, refresh_artwork=args.refresh_artwork)
+    tv.execute_tv_plan(
+        plan, move=args.move, refresh_artwork=args.refresh_artwork, subs_client=subs_client
+    )
 
 
 if __name__ == "__main__":
