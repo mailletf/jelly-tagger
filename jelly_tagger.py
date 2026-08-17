@@ -5,7 +5,7 @@ Jellyfin Library Organizer (CLI)
 Scans a folder of media files and reorganizes them into the folder
 structure Jellyfin expects.
 
-Music mode (default) reads MP3 ID3 tags:
+Music mode (default) reads audio tags (MP3/FLAC/M4A/OGG):
 
     Music Library/
         Artist/
@@ -61,8 +61,6 @@ import sys
 
 try:
     from mutagen import File as MutagenFile
-    from mutagen.easyid3 import EasyID3
-    from mutagen.id3 import ID3NoHeaderError
 except ImportError:
     sys.exit("Missing dependency 'mutagen'. Install it with:\n\n    pip install mutagen\n")
 
@@ -85,7 +83,7 @@ def sanitize(name: str) -> str:
 
 
 def read_tags(filepath: str):
-    """Read artist/album/title/track number from an MP3 file's ID3 tags.
+    """Read artist/album/title/track number from an audio file's tags.
 
     A missing tag comes back as "" rather than as its placeholder, so callers
     can tell "no tag" apart from "a tag that happens to read Unknown Artist"
@@ -94,29 +92,20 @@ def read_tags(filepath: str):
     """
     artist = album = title = ""
     track = ""
+    # easy=True gives the same tag names (artist/album/title/tracknumber)
+    # across ID3, Vorbis comments (FLAC/OGG), MP4 and so on.
     try:
-        audio = EasyID3(filepath)
-        artist = audio.get("albumartist", [""])[0] or audio.get("artist", [""])[0]
-        album = audio.get("album", [""])[0]
-        title = audio.get("title", [""])[0]
-        track_raw = audio.get("tracknumber", [""])[0]
-        if track_raw:
-            track = track_raw.split("/")[0].strip()
-    except ID3NoHeaderError:
-        pass
+        audio = MutagenFile(filepath, easy=True)
+        if audio and audio.tags:
+            tags = audio.tags
+            artist = (tags.get("albumartist", [""])[0] or tags.get("artist", [""])[0])
+            album = tags.get("album", [""])[0]
+            title = tags.get("title", [""])[0]
+            track_raw = tags.get("tracknumber", [""])[0]
+            if track_raw:
+                track = track_raw.split("/")[0].strip()
     except Exception:
-        # Fall back to generic mutagen reading for non-ID3 tag formats
-        try:
-            audio = MutagenFile(filepath, easy=True)
-            if audio and audio.tags:
-                artist = audio.tags.get("albumartist", [""])[0] or audio.tags.get("artist", [""])[0]
-                album = audio.tags.get("album", [""])[0]
-                title = audio.tags.get("title", [""])[0]
-                track_raw = audio.tags.get("tracknumber", [""])[0]
-                if track_raw:
-                    track = track_raw.split("/")[0].strip()
-        except Exception:
-            pass
+        pass
 
     artist = artist.strip() if artist else ""
     album = album.strip() if album else ""
@@ -144,13 +133,20 @@ def build_dest_path(dest_root: str, artist: str, album: str, title: str, track: 
     return os.path.join(dest_root, artist_dir, album_dir, filename)
 
 
-def find_mp3s(source_dir: str):
-    mp3_files = []
+# Only formats read_tags actually gets tags out of: mutagen's easy wrappers
+# cover MP3/MP4, and FLAC/Ogg use those same lowercase key names natively.
+# WAV/AIFF (raw ID3 frames) and WMA (WM/… keys) would read as untagged and
+# land every file under Unknown Artist, so they stay out.
+AUDIO_EXTS = (".mp3", ".flac", ".m4a", ".m4b", ".ogg", ".oga", ".opus")
+
+
+def find_audio_files(source_dir: str):
+    found = []
     for root, _, files in os.walk(source_dir):
         for f in files:
-            if f.lower().endswith(".mp3"):
-                mp3_files.append(os.path.join(root, f))
-    return sorted(mp3_files)
+            if f.lower().endswith(AUDIO_EXTS):
+                found.append(os.path.join(root, f))
+    return sorted(found)
 
 
 def fill_from_fingerprint(filepath, artist, album, title, fingerprinter):
@@ -183,9 +179,9 @@ def fill_from_fingerprint(filepath, artist, album, title, fingerprinter):
     return artist, album, title
 
 
-def build_plan(mp3_files, dest_dir, fingerprinter=None):
+def build_plan(audio_files, dest_dir, fingerprinter=None):
     plan = []
-    for filepath in mp3_files:
+    for filepath in audio_files:
         artist, album, title, track = read_tags(filepath)
         if fingerprinter is not None:
             artist, album, title = fill_from_fingerprint(
@@ -210,7 +206,7 @@ def build_plan(mp3_files, dest_dir, fingerprinter=None):
 
 def print_plan(plan):
     if not plan:
-        print("No MP3 files found.")
+        print("No audio files found.")
         return
     width_artist = max(len(p["artist"]) for p in plan)
     width_album = max(len(p["album"]) for p in plan)
@@ -343,9 +339,9 @@ def make_subs_client(args):
 
 
 def run_music_mode(args):
-    mp3_files = find_mp3s(args.source)
-    if not mp3_files:
-        print("No MP3 files found in that folder.")
+    audio_files = find_audio_files(args.source)
+    if not audio_files:
+        print("No audio files found in that folder.")
         return
 
     fingerprinter = None
@@ -353,7 +349,7 @@ def run_music_mode(args):
         import fingerprint
         fingerprinter = fingerprint.AcoustIDClient(args.acoustid_api_key, fpcalc_bin=args.fpcalc)
 
-    plan = build_plan(mp3_files, args.dest, fingerprinter=fingerprinter)
+    plan = build_plan(audio_files, args.dest, fingerprinter=fingerprinter)
     print_plan(plan)
 
     if args.dry_run:

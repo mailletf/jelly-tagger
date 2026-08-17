@@ -3,7 +3,8 @@
 A small command-line tool that organizes messy media folders into the
 layout Jellyfin expects. It has three modes:
 
-- **`--mode music`** (default) — scans MP3 files, reads their ID3 tags, and
+- **`--mode music`** (default) — scans audio files (`.mp3`, `.flac`, `.m4a`,
+  `.m4b`, `.ogg`, `.oga`, `.opus`), reads their embedded tags, and
   reorganizes them into an Artist/Album/Track structure.
 - **`--mode movies`** — scans video files, looks each one up on
   [TMDB](https://www.themoviedb.org/), and lays it out with a `tmdbid` tag
@@ -31,7 +32,7 @@ Music Library/
             02 - Another Track.mp3
 ```
 
-It reads **ID3 tags** already embedded in your MP3s (artist, album, track
+It reads the **tags** already embedded in your files (artist, album, track
 number, title) and uses them to rename/move things into the right place.
 Files with missing tags fall back to "Unknown Artist" / "Unknown Album" /
 the original filename, so nothing gets skipped — or, with an AcoustID key,
@@ -285,7 +286,7 @@ python3 jelly_tagger.py ~/Downloads/tv ~/Media/Shows --mode tv --move
 
 ## How it decides where a file goes
 
-For each MP3, the tool reads:
+For each audio file, the tool reads:
 
 - **Artist** → top-level folder
 - **Album** → subfolder under the artist
@@ -318,7 +319,7 @@ Recommended taggers:
 
 A typical workflow:
 
-1. Run Picard on your MP3s to get clean, accurate tags.
+1. Run Picard on your files to get clean, accurate tags.
 2. Run jelly-tagger with `--dry-run` to preview the result.
 3. Run jelly-tagger without `--dry-run` to copy/move files into place.
 

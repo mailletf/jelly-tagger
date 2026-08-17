@@ -2,7 +2,13 @@ import os
 from unittest import mock
 
 import jelly_tagger
-from jelly_tagger import UNKNOWN_ALBUM, UNKNOWN_ARTIST, build_plan, fill_from_fingerprint
+from jelly_tagger import (
+    UNKNOWN_ALBUM,
+    UNKNOWN_ARTIST,
+    build_plan,
+    fill_from_fingerprint,
+    find_audio_files,
+)
 
 
 class FakeFingerprinter:
@@ -125,3 +131,13 @@ def test_build_plan_without_fingerprinter_keeps_unknown_folders(tmp_path):
     assert plan[0]["dest"] == os.path.join(
         str(tmp_path / "out"), UNKNOWN_ARTIST, UNKNOWN_ALBUM, "track01.mp3"
     )
+
+
+def test_find_audio_files_covers_non_mp3_formats(tmp_path):
+    for name in ("a.flac", "b.MP3", "c.m4a", "d.opus", "cover.jpg", "notes.txt"):
+        (tmp_path / name).write_bytes(b"")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "e.ogg").write_bytes(b"")
+
+    found = [os.path.basename(p) for p in find_audio_files(str(tmp_path))]
+    assert sorted(found) == ["a.flac", "b.MP3", "c.m4a", "d.opus", "e.ogg"]
