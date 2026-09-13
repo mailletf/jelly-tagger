@@ -140,9 +140,16 @@ def build_dest_path(dest_root: str, artist: str, album: str, title: str, track: 
 AUDIO_EXTS = (".mp3", ".flac", ".m4a", ".m4b", ".ogg", ".oga", ".opus")
 
 
+def walk_source(source: str):
+    """os.walk, except a single file is yielded on its own."""
+    if os.path.isfile(source):
+        return [(os.path.dirname(source), [], [os.path.basename(source)])]
+    return os.walk(source)
+
+
 def find_audio_files(source_dir: str):
     found = []
-    for root, _, files in os.walk(source_dir):
+    for root, _, files in walk_source(source_dir):
         for f in files:
             if f.lower().endswith(AUDIO_EXTS):
                 found.append(os.path.join(root, f))
@@ -252,7 +259,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Organize MP3s or movies into a Jellyfin-friendly folder structure."
     )
-    parser.add_argument("source", help="Folder containing files to organize (scanned recursively)")
+    parser.add_argument("source", help="File, or folder scanned recursively, to organize")
     parser.add_argument("dest", help="Destination Jellyfin library folder")
     parser.add_argument(
         "--mode", choices=["music", "movies", "tv"], default="music",
@@ -300,13 +307,21 @@ def main():
         "--no-cache", action="store_true",
         help="Ignore and don't update .jelly-tagger-cache.json (movies/tv mode only)",
     )
+    parser.add_argument(
+        "--rematch", action="store_true",
+        help="Movies mode: fix wrong matches. Point source at the mis-tagged folder(s); "
+             "ignores [tmdbid-N] tags and the cache, always lets you search/pick, moves "
+             "the video into the new folder and deletes the old folder's artwork",
+    )
     parser.add_argument("--move", action="store_true", help="Move files instead of copying (deletes originals)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--dry-run", action="store_true", help="Show the plan only, don't touch any files")
     args = parser.parse_args()
 
-    if not os.path.isdir(args.source):
-        sys.exit(f"Error: source folder does not exist: {args.source}")
+    if not os.path.exists(args.source):
+        sys.exit(f"Error: source does not exist: {args.source}")
+    # The resolution cache lives next to the files; for a single file, that's its folder.
+    args.cache_dir = args.source if os.path.isdir(args.source) else os.path.dirname(args.source)
 
     if args.mode == "movies":
         run_movies_mode(args)
@@ -386,10 +401,15 @@ def run_movies_mode(args):
         return
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
-    cache = movies.ResolutionCache(args.source, disabled=args.no_cache)
+    if args.rematch:
+        # Copying would leave the wrong entry in the library, and a cache file
+        # written into the old folder would stop it from being cleaned up.
+        args.move = args.no_cache = True
+    cache = movies.ResolutionCache(args.cache_dir, disabled=args.no_cache)
     subs_client = make_subs_client(args)
     plan = movies.build_movie_plan(
-        video_files, args.dest, tmdb_client, cache=cache, subs_client=subs_client
+        video_files, args.dest, tmdb_client, cache=cache, subs_client=subs_client,
+        rematch=args.rematch,
     )
     print()
     movies.print_movie_plan(plan)
@@ -411,6 +431,8 @@ def run_movies_mode(args):
     movies.execute_movie_plan(
         plan, move=args.move, refresh_artwork=args.refresh_artwork, subs_client=subs_client
     )
+    if args.rematch:
+        movies.remove_stale_movie_folders(plan)
 
 
 def run_tv_mode(args):
@@ -430,7 +452,7 @@ def run_tv_mode(args):
         return
 
     tmdb_client = movies.TMDBClient(args.tmdb_api_key, image_langs=args.image_langs.split(","))
-    cache = movies.ResolutionCache(args.source, disabled=args.no_cache)
+    cache = movies.ResolutionCache(args.cache_dir, disabled=args.no_cache)
     subs_client = make_subs_client(args)
     plan = tv.build_tv_plan(
         episode_files, args.dest, tmdb_client, cache=cache, subs_client=subs_client

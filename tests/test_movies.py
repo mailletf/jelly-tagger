@@ -598,3 +598,46 @@ def test_match_from_path_accepts_jellyfin12_tag_variants():
     for tag in ("[tmdb-7326]", "{tmdbid-7326}", "(tmdbid-7326)"):
         match = movies.match_from_path(f"/lib/Juno (2007) {tag}/Juno (2007).mkv")
         assert (match["id"], match["title"], match["year"]) == (7326, "Juno", 2007)
+
+
+def test_rematch_ignores_folder_tag_and_moves_out_of_old_folder(tmp_path):
+    old_dir = tmp_path / "Juno (2007) [tmdbid-7326]"
+    old_dir.mkdir()
+    video = old_dir / "Juno (2007).mkv"
+    video.write_bytes(b"video")
+    (old_dir / "Juno (2007).en.srt").write_bytes(b"sub")
+    (old_dir / "Juno (2007).jpg").write_bytes(b"wrong poster")
+    (old_dir / "backdrop.jpg").write_bytes(b"wrong backdrop")
+
+    client = movies.TMDBClient("fake")
+    # An exact hit that would normally auto-match; rematch must still ask.
+    with mock.patch.object(client, "search_movie", return_value=[cand(1, "Juno", 2007), cand(2, "Other", 2007)]), \
+         mock.patch.object(client, "get_images", return_value={"poster": None, "backdrop": None, "logo": None}), \
+         mock.patch("builtins.input", return_value="2"):
+        plan = movies.build_movie_plan([str(video)], str(tmp_path), client, rematch=True)
+
+    new_dir = tmp_path / "Other (2007) [tmdbid-2]"
+    assert plan[0]["dest"] == str(new_dir / "Other (2007).mkv")
+
+    execute_movie_plan(plan, move=True)
+    movies.remove_stale_movie_folders(plan)
+
+    assert (new_dir / "Other (2007).mkv").read_bytes() == b"video"
+    assert (new_dir / "Other (2007).en.srt").exists()
+    assert not old_dir.exists()
+
+
+def test_remove_stale_movie_folders_keeps_folder_with_other_files(tmp_path):
+    old_dir = tmp_path / "Old [tmdbid-1]"
+    old_dir.mkdir()
+    (old_dir / "poster.jpg").touch()
+    (old_dir / "Other cut.mkv").touch()
+    movies.remove_stale_movie_folders([{"src": str(old_dir / "gone.mkv"), "movie_dir": str(tmp_path / "New")}])
+    assert (old_dir / "Other cut.mkv").exists() and (old_dir / "poster.jpg").exists()
+
+
+def test_find_video_files_accepts_single_file(tmp_path):
+    video = tmp_path / "Juno.2007.mkv"
+    video.write_bytes(b"x")
+    (tmp_path / "Other.mkv").write_bytes(b"x")
+    assert movies.find_video_files(str(video)) == [str(video)]

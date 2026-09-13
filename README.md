@@ -129,6 +129,20 @@ Videos are left untouched (already in place); missing artwork is filled in,
 and with `--refresh-artwork` existing images are replaced with the current
 best pick.
 
+### Fixing a wrong match
+
+Point the source at the mis-tagged folder, with your library as destination:
+
+```bash
+python3 jelly_tagger.py "~/Media/Movies/Wrong Title (2001) [tmdbid-123]" ~/Media/Movies \
+    --mode movies --rematch
+```
+
+`--rematch` ignores the `[tmdbid-N]` tag and the cache and always shows the
+candidate list (type a new search term if the right movie isn't there). The
+video and its subtitles are moved into the new folder, then the old folder is
+deleted if only artwork is left in it. Rescan the library in Jellyfin afterwards.
+
 ## TV mode
 
 ```

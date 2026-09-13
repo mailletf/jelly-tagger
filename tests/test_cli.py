@@ -49,4 +49,4 @@ def test_missing_source_dir_errors(tmp_path):
     missing = tmp_path / "does-not-exist"
     result = run_cli([str(missing), str(tmp_path / "dest")])
     assert result.returncode != 0
-    assert "source folder does not exist" in result.stderr
+    assert "source does not exist" in result.stderr

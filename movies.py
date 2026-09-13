@@ -23,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from jelly_tagger import sanitize
+from jelly_tagger import sanitize, walk_source
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv"}
 SUBTITLE_EXTENSIONS = {".srt", ".sub"}
@@ -268,13 +268,15 @@ def _fallback_attempts(name: str, year, limit: int = 12):
     return attempts[:limit]
 
 
-def resolve_interactive(header: str, search_fn, guessed_name, guessed_year, skip_prompt: str):
+def resolve_interactive(header: str, search_fn, guessed_name, guessed_year, skip_prompt: str,
+                        auto_match: bool = True):
     """Shared interactive TMDB resolution loop.
 
     Auto-matches when exactly one candidate exactly matches the current search
     name (and year, when one is set). Otherwise prints a numbered candidate list
     and lets the user pick a number, enter a new free-text search term, or skip.
     Returns the chosen candidate dict, or None if the user chose to skip.
+    With auto_match=False the list is always shown, even for an exact hit.
     """
     search_name, search_year = guessed_name, guessed_year
 
@@ -306,7 +308,7 @@ def resolve_interactive(header: str, search_fn, guessed_name, guessed_year, skip
             if c["title"].strip().lower() == search_name.strip().lower()
             and (search_year is None or c["year"] == search_year)
         ]
-        if len(exact) == 1:
+        if auto_match and len(exact) == 1:
             match = exact[0]
             print(f"  -> auto-matched: {match['title']} ({match['year']}) [tmdbid-{match['id']}]")
             return match
@@ -328,7 +330,7 @@ def resolve_interactive(header: str, search_fn, guessed_name, guessed_year, skip
         # empty input: just re-search with the same term
 
 
-def resolve_movie(video_path: str, tmdb_client: TMDBClient):
+def resolve_movie(video_path: str, tmdb_client: TMDBClient, auto_match: bool = True):
     """Interactively resolve a video file to a confirmed TMDB movie match.
 
     Returns a dict with id/title/year, or None if the user chose to skip it.
@@ -341,12 +343,13 @@ def resolve_movie(video_path: str, tmdb_client: TMDBClient):
         guessed_title,
         guessed_year,
         "  Pick a number, enter a new search term, or 's' to skip this file: ",
+        auto_match=auto_match,
     )
 
 
 def find_video_files(source_dir: str, min_size_bytes: int = 0, skip_extras: bool = False):
     video_files = []
-    for root, _, files in os.walk(source_dir):
+    for root, _, files in walk_source(source_dir):
         for f in files:
             if os.path.splitext(f)[1].lower() not in VIDEO_EXTENSIONS:
                 continue
@@ -412,12 +415,15 @@ def plan_subtitle_downloads(video_path: str, dest_dir: str, base_name: str, subs
     return downloads
 
 
-def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=None, subs_client=None):
+def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=None, subs_client=None,
+                     rematch: bool = False):
+    """With rematch, the folder tag and cache are ignored and every file goes
+    through the candidate picker, to fix a movie that was matched wrong."""
     plan = []
     for video_path in video_files:
         cache_key = f"movie:{os.path.basename(video_path)}"
-        cached = cache.get(cache_key) if cache else None
-        from_path = match_from_path(video_path)
+        cached = cache.get(cache_key) if cache and not rematch else None
+        from_path = None if rematch else match_from_path(video_path)
         if from_path is not None:
             match = from_path
             print(f"{os.path.basename(video_path)}: tmdbid from folder name "
@@ -430,7 +436,7 @@ def build_movie_plan(video_files, dest_dir: str, tmdb_client: TMDBClient, cache=
             print(f"{os.path.basename(video_path)}: cached match "
                   f"{match['title']} ({match['year']}) [tmdbid-{match['id']}]")
         else:
-            match = resolve_movie(video_path, tmdb_client)
+            match = resolve_movie(video_path, tmdb_client, auto_match=not rematch)
             if cache:
                 cache.set(cache_key, match if match else {"skipped": True})
         if match is None:
@@ -641,3 +647,26 @@ def execute_movie_plan(plan, move: bool, refresh_artwork: bool = False, subs_cli
         print(f"Done with {len(errors)} error(s) out of {total} movie(s).")
     else:
         print(f"Done. Organized {total} movie(s) into {os.path.dirname(plan[0]['movie_dir'])}" if plan else "Done.")
+
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def remove_stale_movie_folders(plan):
+    """After a rematch, delete old folders left holding only the wrong artwork.
+
+    Anything else still in the folder (another video, an extra, a .nfo) keeps
+    it on disk, so nothing but images is ever deleted.
+    """
+    for item in plan:
+        old_dir = os.path.dirname(item["src"])
+        if os.path.abspath(old_dir) == os.path.abspath(item["movie_dir"]) or not os.path.isdir(old_dir):
+            continue
+        entries = os.listdir(old_dir)
+        if any(os.path.splitext(e)[1].lower() not in IMAGE_EXTENSIONS for e in entries):
+            print(f"  Left {old_dir} in place: it still holds non-artwork files")
+            continue
+        for e in entries:
+            os.unlink(os.path.join(old_dir, e))
+        os.rmdir(old_dir)
+        print(f"  Removed old folder {old_dir}")
