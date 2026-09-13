@@ -29,6 +29,9 @@ from jelly_tagger import sanitize
 SXXEXX_RE = re.compile(r"(?i)s(\d{1,2})\s*e(\d{1,3})")
 # 1x02 style.
 XFORMAT_RE = re.compile(r"(?i)(?<!\d)(\d{1,2})x(\d{1,3})(?!\d)")
+# "Part02" / "Pt.2": miniseries/documentaries split into parts, which TMDB
+# lists as season 1 episodes.
+PART_RE = re.compile(r"(?i)(?<![a-z])(?:part|pt)[\s._-]*(\d{1,3})(?!\d)")
 # "Season 1" / "Season 01" / "S1" / "S01" folder names.
 SEASON_DIR_RE = re.compile(r"(?i)^(?:season|s)\s*0*(\d{1,2})$")
 # A bare episode number in a filename (used with a season folder).
@@ -43,6 +46,9 @@ def _match_token(text: str):
     m = XFORMAT_RE.search(text)
     if m:
         return int(m.group(1)), int(m.group(2)), m.start()
+    m = PART_RE.search(text)
+    if m:
+        return 1, int(m.group(1)), m.start()
     return None
 
 

@@ -147,3 +147,11 @@ def test_find_episode_files_prompt_skip(tmp_path):
 
     names = {os.path.basename(p) for p, _, _ in result}
     assert names == {"Show.S01E01.mkv"}
+
+
+def test_part_number_is_season_one_episode():
+    import tv
+    path = "/x/The.Vietnam.War.2017.Part02.Riding.the.Tiger.HDTV.x264-SToRIES.mkv"
+    assert tv.parse_episode(path) == (1, 2)
+    assert tv.parse_episode("/x/Show Pt.3.mkv") == (1, 3)
+    assert tv.parse_episode("/x/Apartment 5.mkv") is None
