@@ -592,3 +592,9 @@ def test_build_movie_plan_skip(tmp_path, capsys):
 
     assert plan == []
     assert "Skipping" in capsys.readouterr().out
+
+
+def test_match_from_path_accepts_jellyfin12_tag_variants():
+    for tag in ("[tmdb-7326]", "{tmdbid-7326}", "(tmdbid-7326)"):
+        match = movies.match_from_path(f"/lib/Juno (2007) {tag}/Juno (2007).mkv")
+        assert (match["id"], match["title"], match["year"]) == (7326, "Juno", 2007)

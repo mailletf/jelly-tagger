@@ -163,8 +163,11 @@ class TMDBClient:
 
 
 # A folder already organized by this tool (or Jellyfin conventions), e.g.
-# "Juno (2007) [tmdbid-7326]".
-TMDBID_DIR_RE = re.compile(r"^(?P<title>.*?)(?:\s*\((?P<year>\d{4})\))?\s*\[tmdbid-(?P<id>\d+)\]$")
+# "Juno (2007) [tmdbid-7326]". Jellyfin 12 also accepts "tmdb" as an alias
+# and {} / () brackets, so read those too (we still write [tmdbid-N]).
+TMDBID_DIR_RE = re.compile(
+    r"^(?P<title>.*?)(?:\s*\((?P<year>\d{4})\))?\s*[\[{(]tmdb(?:id)?-(?P<id>\d+)[\]})]$"
+)
 
 
 def match_from_path(video_path: str):
